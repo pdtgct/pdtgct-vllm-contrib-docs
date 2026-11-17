@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>vLLM Persistent State Review</title>
+<meta name="description" content="A reviewer's guide to RFC 1 (engine-managed persistent state), RFC 2 (endpoint plugin lifecycle), RFC 3 and the speech-to-text fixes for vLLM.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column (68ch) with figures that widen to 64rem; a review ledger, top to bottom. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #161a21;
+  --muted: #586170;
+  --rule: #d9dde4;
+  --accent: #0d6b66;      /* links, primary marks */
+  --accent-soft: #dcefed;
+  --state: #b0640c;       /* persistent state: amber */
+  --state-soft: #f6e7d3;
+  --kv: #3552c8;          /* KV cache: blue */
+  --kv-soft: #e1e7fb;
+  --tests: #9aa3b1;
+  --docs: #c9ced7;
+  --ok: #2c7a3f;
+  --warn: #a15c00;
+  --code-bg: #eef0f3;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+    --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+    --kv: #93a8ff; --kv-soft: #1e2647; --tests: #5d6675; --docs: #3c434f; --ok: #6cc583; --warn: #e6a64a;
+    --code-bg: #1d222b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+  --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+  --kv: #93a8ff; --kv-soft: #1e2647; --tests: #5d6675; --docs: #3c434f; --ok: #6cc583; --warn: #e6a64a;
+  --code-bg: #1d222b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--f-body);
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.wrap {
+  max-width: 64rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.col { max-width: 44rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code, .mono { font-family: var(--f-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+h1, h2, h3 { font-family: var(--f-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(1.45rem, 3vw, 1.9rem); font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1.4 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+.stack-lg { display: flex; flex-direction: column; gap: 1.6rem; }
+
+/* header */
+header.top { border-bottom: 1px solid var(--rule); background: var(--surface); }
+header.top .wrap { padding-block: 2.6rem 2.2rem; display: flex; flex-direction: column; gap: 1.1rem; }
+.lede { font-size: 1.15rem; max-width: 44rem; }
+.ask {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; margin-top: 0.4rem;
+}
+.ask div { border-top: 3px solid var(--accent); padding-top: 0.55rem; min-width: 0; }
+.ask b { display: block; font-family: var(--f-display); font-size: 1.05rem; }
+.ask span { color: var(--muted); font-size: 0.92rem; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.9rem; padding-top: 0.4rem; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+/* sections */
+section { padding-block: 3rem 0.5rem; }
+section > .wrap > .head { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.3rem; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 0.7rem; max-width: 52rem; }
+.scroll { overflow-x: auto; }
+svg text { font-family: var(--f-body); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.group td { background: var(--bg); font-weight: 600; font-size: 0.82rem; letter-spacing: 0.03em; color: var(--muted); padding-top: 0.8rem; }
+.table-box { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.table-box table { min-width: 40rem; }
+
+.tag { display: inline-block; font: 500 0.72rem/1.5 var(--f-mono); padding: 0 0.45em; border-radius: 3px; white-space: nowrap; }
+.tag.s1 { background: var(--accent-soft); color: var(--accent); }
+.tag.s2 { background: var(--kv-soft); color: var(--kv); }
+.tag.perf { background: var(--state-soft); color: var(--state); }
+.tag.omni { background: var(--code-bg); color: var(--muted); }
+.tag.new { background: var(--state-soft); color: var(--state); }
+.tag.prior { background: var(--code-bg); color: var(--muted); }
+
+/* comparison cards */
+.cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; }
+.cmp > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; min-width: 0; }
+.cmp h3 { font-size: 1.05rem; margin-bottom: 0.4rem; }
+.cmp .kv { border-top: 4px solid var(--kv); }
+.cmp .mamba { border-top: 4px solid var(--muted); }
+.cmp .ps { border-top: 4px solid var(--state); }
+.cmp ul { margin: 0; padding-left: 1.1rem; font-size: 0.93rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+/* bar chart */
+.bars { display: flex; flex-direction: column; gap: 0.55rem; }
+.bar-row { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.75rem; align-items: center; }
+.bar-row .lab { font: 500 0.85rem/1.2 var(--f-mono); }
+.bar-row .lab small { display: block; font-family: var(--f-body); font-weight: 400; color: var(--muted); font-size: 0.74rem; }
+.bar { display: flex; height: 1.15rem; min-width: 0; }
+.bar i { display: block; height: 100%; }
+.bar .src { background: var(--accent); }
+.bar .tst { background: var(--tests); }
+.bar .doc { background: var(--docs); }
+.bar-row .fig { grid-column: 2; font: 0.78rem/1.3 var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; margin-top: -0.25rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; font-size: 0.82rem; color: var(--muted); margin-top: 0.8rem; }
+.legend i { display: inline-block; width: 0.8rem; height: 0.8rem; vertical-align: -0.1rem; margin-right: 0.35rem; border-radius: 2px; }
+@media (max-width: 30rem) { .bar-row { grid-template-columns: 1fr; gap: 0.25rem; } .bar-row .fig { grid-column: 1; } }
+
+/* merge order */
+ol.order { list-style: none; margin: 0; padding: 0; counter-reset: step; display: flex; flex-direction: column; gap: 0.9rem; }
+ol.order li { counter-increment: step; display: grid; grid-template-columns: 2.2rem 1fr; gap: 0.8rem; align-items: start; }
+ol.order li::before {
+  content: counter(step); font: 600 1.1rem/2rem var(--f-display); text-align: center;
+  width: 2rem; height: 2rem; border-radius: 50%; border: 1.5px solid var(--accent); color: var(--accent);
+}
+ol.order li > div { min-width: 0; }
+ol.order b { font-family: var(--f-display); font-size: 1.05rem; }
+
+/* PR cards */
+.pr { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+.pr-head { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: baseline; }
+.pr-head .num { font: 600 1.05rem var(--f-mono); }
+.pr-head .title { font-weight: 600; }
+.pr dl { display: grid; grid-template-columns: 8.5rem 1fr; gap: 0.35rem 0.9rem; margin: 0; font-size: 0.92rem; }
+.pr dt { color: var(--muted); font-size: 0.8rem; letter-spacing: 0.03em; text-transform: uppercase; padding-top: 0.15rem; }
+.pr dd { margin: 0; min-width: 0; }
+@media (max-width: 34rem) { .pr dl { grid-template-columns: 1fr; } .pr dt { padding-top: 0.4rem; } }
+.prs { display: flex; flex-direction: column; gap: 0.9rem; }
+.rfc-intro { border-left: 3px solid var(--rule); padding-left: 1rem; }
+
+.note { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--warn); border-radius: 6px; padding: 0.9rem 1.1rem; font-size: 0.94rem; }
+.note.ok { border-left-color: var(--ok); }
+
+details { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 0.7rem 1rem; }
+summary { cursor: pointer; font-weight: 600; }
+
+footer { border-top: 1px solid var(--rule); margin-top: 3.5rem; background: var(--surface); }
+footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.4rem; }
+
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">vLLM review guide &middot; state read 2026-11-17 01:15 UTC</p>
+    <h1>Engine-managed persistent state for streaming models</h1>
+    <p class="lede">vLLM keeps state that it can rebuild from tokens. A growing set of streaming audio,
+      speech and video models carry state that comes from their input and cannot be rebuilt. Three RFCs
+      and ten pull requests add that capability in small, opt-in steps. This page explains the gap,
+      lists the models that need the capability, and walks through each pull request in the order we
+      ask you to review it.</p>
+    <div class="ask">
+      <div><b>Review in order</b><span>Seven pull requests make up the two serving stages. Two short bug fixes come first.</span></div>
+      <div><b>Small source changes</b><span>About 4,100 lines of non-test source across all ten pull requests. Tests and design docs make up the other 77 % of the 17,791 added lines.</span></div>
+      <div><b>Opt-in</b><span>Models that do not declare persistent state run the same code paths as today.</span></div>
+      <div><b>Run CI</b><span>No vLLM CI has run: <code>pre-run-check</code> waits for a <code>ready</code> or <code>verified</code> label.</span></div>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#gap">The gap</a>
+      <a href="#models">Models that need it</a>
+      <a href="#changeset">The change set</a>
+      <a href="#order">Merge order</a>
+      <a href="#rfc1">RFC 1</a>
+      <a href="#rfc2">RFC 2</a>
+      <a href="#fixes">Bug fixes</a>
+      <a href="#rfc3">RFC 3</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#status">Status</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- 1. The gap -->
+<section id="gap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">1 &middot; The gap</p>
+      <h2>vLLM can rebuild every piece of state it keeps. Streaming models need state it cannot rebuild.</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>The KV cache stores keys and values by token position. If the engine drops a block, it rebuilds
+          the block by replaying the retained tokens. Mamba-style models keep fixed-size convolution and
+          recurrent state, but that state also derives from the token prefix, and vLLM rebuilds it the same
+          way. Both mechanisms live within one request.</p>
+        <p>A cache-aware streaming ASR model such as
+          <a href="https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b">Nemotron 3.5 ASR Streaming</a>
+          carries encoder attention and convolution caches, predictor state and decoding progress from one
+          audio chunk to the next. That state derives from audio that the server no longer holds. The
+          transcript cannot reconstruct it. The engine must keep the state resident between the inputs of
+          a stream. It must also hold the memory until every GPU write to it has finished, because a late
+          write would otherwise land in the next session's state.</p>
+      </div>
+
+      <div class="cmp" role="list">
+        <div class="kv" role="listitem">
+          <h3>KV cache</h3>
+          <ul>
+            <li>Keys and values by token position</li>
+            <li>Grows with the sequence</li>
+            <li>Rebuilt by replaying retained tokens</li>
+            <li>Prefix-shared across requests</li>
+          </ul>
+        </div>
+        <div class="mamba" role="listitem">
+          <h3>Mamba state</h3>
+          <ul>
+            <li>Fixed-size convolution and recurrent tensors</li>
+            <li>Derived from the token prefix</li>
+            <li>Rebuilt by replaying the prefix</li>
+            <li>Lives for one request</li>
+          </ul>
+        </div>
+        <div class="ps" role="listitem">
+          <h3>Persistent state (RFC 1)</h3>
+          <ul>
+            <li>One fixed-size page of model-declared tensors per session</li>
+            <li>Derived from input audio, so no replay exists</li>
+            <li>Reserved before the first input; kept between inputs</li>
+            <li>Reusable only after the worker acknowledges the last write</li>
+          </ul>
+        </div>
+      </div>
+
+      <figure>
+        <div class="scroll">
+          <svg viewBox="0 0 960 250" width="100%" style="min-width:640px" role="img" aria-labelledby="lifeT lifeD">
+            <title id="lifeT">Lifetime of one persistent-state session</title>
+            <desc id="lifeD">A session is admitted and reserves a state page before audio arrives. The page stays assigned through each audio chunk and each wait for more input. When the session ends, the page is retired and stays unavailable until the worker acknowledges that all writes finished; then it returns to the pool.</desc>
+            <!-- time axis -->
+            <line x1="40" y1="200" x2="930" y2="200" stroke="var(--rule)" stroke-width="1.5"/>
+            <text x="930" y="194" text-anchor="end" font-size="12" fill="var(--muted)">time</text>
+            <!-- input lane -->
+            <text x="40" y="38" font-size="12" fill="var(--muted)" font-weight="600">STREAM INPUTS</text>
+            <rect x="200" y="52" width="110" height="34" rx="3" fill="var(--kv-soft)" stroke="var(--kv)"/>
+            <text x="255" y="74" text-anchor="middle" font-size="13" fill="var(--ink)">audio chunk 1</text>
+            <rect x="420" y="52" width="110" height="34" rx="3" fill="var(--kv-soft)" stroke="var(--kv)"/>
+            <text x="475" y="74" text-anchor="middle" font-size="13" fill="var(--ink)">audio chunk 2</text>
+            <rect x="590" y="52" width="110" height="34" rx="3" fill="var(--kv-soft)" stroke="var(--kv)"/>
+            <text x="645" y="74" text-anchor="middle" font-size="13" fill="var(--ink)">audio chunk n</text>
+            <!-- state lane -->
+            <text x="40" y="118" font-size="12" fill="var(--muted)" font-weight="600">STATE PAGE</text>
+            <rect x="110" y="130" width="640" height="30" rx="3" fill="var(--state-soft)" stroke="var(--state)"/>
+            <rect x="750" y="130" width="90" height="30" rx="3" fill="var(--surface)" stroke="var(--state)" stroke-dasharray="4 3"/>
+            <text x="430" y="150" text-anchor="middle" font-size="13" fill="var(--ink)">assigned to the session, also while it waits for input</text>
+            <text x="795" y="150" text-anchor="middle" font-size="12" fill="var(--ink)">retired</text>
+            <!-- events -->
+            <g font-size="12" fill="var(--ink)">
+              <line x1="110" y1="125" x2="110" y2="200" stroke="var(--accent)" stroke-width="2"/>
+              <circle cx="110" cy="200" r="4" fill="var(--accent)"/>
+              <text x="110" y="222" text-anchor="middle">admit_stream</text>
+              <text x="110" y="238" text-anchor="middle" fill="var(--muted)">reserve or refuse</text>
+              <text x="365" y="190" text-anchor="middle" fill="var(--muted)">parked</text>
+              <text x="560" y="190" text-anchor="middle" fill="var(--muted)">parked</text>
+              <line x1="750" y1="125" x2="750" y2="200" stroke="var(--state)" stroke-width="2"/>
+              <circle cx="750" cy="200" r="4" fill="var(--state)"/>
+              <text x="750" y="222" text-anchor="middle">session ends</text>
+              <line x1="840" y1="125" x2="840" y2="200" stroke="var(--ok)" stroke-width="2"/>
+              <circle cx="840" cy="200" r="4" fill="var(--ok)"/>
+              <text x="944" y="222" text-anchor="end">worker ack</text>
+              <text x="944" y="238" text-anchor="end" fill="var(--muted)">page reusable</text>
+            </g>
+          </svg>
+        </div>
+        <figcaption>One session's state page. The scheduler reserves the page at admission, keeps it while the
+          session waits between inputs, and returns it to the pool only after the worker acknowledges that the
+          writes and cleanup of the last step finished (the release fence). The design document in
+          <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> describes the API and the failure handling.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 2. Models -->
+<section id="models">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">2 &middot; Who needs it</p>
+      <h2>Many models need this, across ASR, full-duplex speech, TTS and video</h2>
+      <p class="muted">Every row below names a public model or serving need whose state is carried across
+        steps or chunks outside the KV cache. Rows marked <span class="tag prior">prior</span> appear in
+        <a href="https://github.com/vllm-project/vllm/issues/65543">#65543</a> or
+        <a href="https://github.com/vllm-project/vllm-omni/issues/5212">vllm-omni#5212</a>; rows marked
+        <span class="tag new">new</span> come from a survey done on 2026-11-16.</p>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Model or need</th><th>State carried between chunks</th><th>Source</th><th></th></tr></thead>
+          <tbody>
+            <tr class="group"><td colspan="4">Cache-aware and native streaming ASR</td></tr>
+            <tr><td>Nemotron 3.5 ASR Streaming</td><td>Encoder attention and convolution caches, RNN-T predictor state, hypotheses</td><td><a href="https://github.com/vllm-project/vllm/issues/47455">vllm#47455</a></td><td><span class="tag prior">prior</span></td></tr>
+            <tr><td>Parakeet Realtime EOU 120M</td><td>The same cache-aware encoder caches and RNN-T decoder state, 80 to 160 ms chunks</td><td><a href="https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1">model card</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>Voxtral Realtime</td><td>Two KV caches at different rates, plus a 4-frame history buffer for the causal convolution stem</td><td><a href="https://arxiv.org/html/2602.11298v1">paper</a></td><td><span class="tag prior">prior</span></td></tr>
+            <tr><td>Kyutai STT (Delayed Streams Modeling)</td><td>Streaming Mimi codec encoder state, plus decoder KV</td><td><a href="https://huggingface.co/kyutai/stt-1b-en_fr">model card</a>, <a href="https://arxiv.org/abs/2509.08753">paper</a></td><td><span class="tag new">new</span></td></tr>
+            <tr class="group"><td colspan="4">Full-duplex speech and omni models</td></tr>
+            <tr><td>Kyutai Moshi</td><td>Mimi streaming encoder and decoder state; temporal transformer KV</td><td><a href="https://github.com/vllm-project/vllm-omni/pull/9319">vllm-omni#9319</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>NVIDIA PersonaPlex 7B</td><td>"persistent ring KV + streaming Mimi state"</td><td><a href="https://github.com/vllm-project/vllm-omni/blob/main/recipes/NVIDIA/PersonaPlex.md">recipe</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/7294">vllm-omni#7294</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>MiniCPM-o 4.5</td><td>Token2wav flow and vocoder caches, kept per request by hand</td><td><a href="https://github.com/vllm-project/vllm-omni/pull/6100">vllm-omni#6100</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>Qwen3-Omni Code2Wav</td><td>Left context of a causal ConvNet codec decoder</td><td><a href="https://arxiv.org/html/2509.17765v1">paper</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>GLM-4-Voice</td><td>Causal convolution and block-causal attention context in the tokenizer; flow and HiFi-GAN decoder state</td><td><a href="https://arxiv.org/html/2412.02612v1">paper</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>Step-Audio 2 detokenizer</td><td>Flow-matching stream cache and HiFT cache carried across chunks</td><td><a href="https://github.com/stepfun-ai/Step-Audio2/blob/main/token2wav.py">token2wav.py</a></td><td><span class="tag prior">prior</span></td></tr>
+            <tr class="group"><td colspan="4">Streaming TTS</td></tr>
+            <tr><td>CosyVoice 2 and 3</td><td>Chunk-aware causal flow matching and HiFT vocoder overlap</td><td><a href="https://arxiv.org/abs/2412.10117">paper</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/6588">vllm-omni#6588</a></td><td><span class="tag prior">prior</span></td></tr>
+            <tr><td>Kyutai TTS</td><td>Delayed-stream state, depth-decoder KV, streaming Mimi decoder state</td><td><a href="https://github.com/vllm-project/vllm-omni/pull/3580">vllm-omni#3580</a></td><td><span class="tag new">new</span></td></tr>
+            <tr><td>MOSS-TTS-Realtime</td><td>Per-request GPU history in a 50-frame ring, with slot reuse inside the model</td><td><a href="https://github.com/vllm-project/vllm-omni/pull/9519">vllm-omni#9519</a></td><td><span class="tag new">new</span></td></tr>
+            <tr class="group"><td colspan="4">Video and world models</td></tr>
+            <tr><td>Autoregressive video and world models</td><td>Rolling KV over recent frames, plus non-KV session memory such as context latents</td><td><a href="https://github.com/vllm-project/vllm-omni/issues/4480">vllm-omni#4480</a>, <a href="https://github.com/vllm-project/vllm-omni/issues/6227">#6227</a></td><td><span class="tag prior">prior</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="col stack">
+        <p><a href="https://github.com/vllm-project/vllm-omni/issues/6453">vllm-omni#6453</a> counts at least
+          ten vLLM-Omni models that each manage per-request codec or stage state in a shared dictionary, each
+          with its own keying, cleanup and failure handling. It cites a state leak fixed in vllm-omni#5556 and
+          asks for a runtime-owned lifecycle. RFC 1 gives that lifecycle a single owner: the scheduler.</p>
+        <p>Users ask for the capability in vLLM issues as well:</p>
+        <ul class="stack" style="gap:0.35rem;margin:0;padding-left:1.2rem">
+          <li><a href="https://github.com/vllm-project/vllm/issues/47455">#47455</a> requests streaming Nemotron 3.5 ASR.</li>
+          <li><a href="https://github.com/vllm-project/vllm/issues/51376">#51376</a> reports that Qwen3-ASR realtime, with session state carried as token history, returns the previous turn's text on silence.</li>
+          <li><a href="https://github.com/vllm-project/vllm/issues/47264">#47264</a> reports that pseudo-streaming through <code>response_prefix</code> repeats or drops segments.</li>
+          <li><a href="https://github.com/vllm-project/vllm/issues/52471">#52471</a> measures streaming-input cost per chunk growing with the whole prompt.</li>
+        </ul>
+        <p class="muted">Token-derived recurrent models are not part of this gap.
+          <a href="https://github.com/vllm-project/vllm/pull/50077">RWKV-7 (#50077)</a> uses the existing Mamba
+          state path, and RFC 1 leaves that path unchanged.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. Change set -->
+<section id="changeset">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">3 &middot; The change set</p>
+      <h2>Ten pull requests, each with a narrow source change</h2>
+      <p>Each RFC lands as a short stack of pull requests. A stacked pull request lists its own commits,
+        and you review only those. Most of each change is tests and design documentation.</p>
+    </div>
+    <div class="stack-lg">
+      <figure>
+        <div class="scroll">
+          <svg viewBox="0 0 960 330" width="100%" style="min-width:680px" role="img" aria-labelledby="depT depD">
+            <title id="depT">Pull request dependency graph</title>
+            <desc id="depD">Four lanes. Speech-to-text fixes: 67144 then 67151, and 67139 alone. RFC 1: 67374 then 67375 then 67583. RFC 2: 65546 then 67294. RFC 3, drafts: vllm 65549 then vllm-omni 9849.</desc>
+            <defs>
+              <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+            </defs>
+            <g font-size="12" fill="var(--muted)" font-weight="600">
+              <text x="16" y="52">SPEECH-TO-TEXT FIXES</text>
+              <text x="16" y="132">RFC 1 &#183; PERSISTENT STATE</text>
+              <text x="16" y="212">RFC 2 &#183; PLUGIN LIFECYCLE</text>
+              <text x="16" y="292">RFC 3 &#183; OMNI (DRAFTS)</text>
+            </g>
+            <g stroke="var(--rule)"><line x1="16" y1="90" x2="944" y2="90"/><line x1="16" y1="170" x2="944" y2="170"/><line x1="16" y1="250" x2="944" y2="250"/></g>
+            <!-- boxes: x, width 150, height 44 -->
+            <g font-size="13">
+              <!-- lane 1 -->
+              <rect x="230" y="26" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+              <text x="305" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67144</text>
+              <text x="305" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">26 source lines</text>
+              <rect x="440" y="26" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+              <text x="515" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67151</text>
+              <text x="515" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">67 source lines</text>
+              <rect x="700" y="26" width="150" height="46" rx="4" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="4 3"/>
+              <text x="775" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67139</text>
+              <text x="775" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">11 source lines</text>
+              <!-- lane 2 -->
+              <rect x="230" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+              <text x="305" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67374</text>
+              <text x="305" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">1,531 source lines</text>
+              <rect x="440" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+              <text x="515" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67375</text>
+              <text x="515" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">1,527 source lines</text>
+              <rect x="650" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+              <text x="725" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67583</text>
+              <text x="725" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">385 source lines</text>
+              <!-- lane 3 -->
+              <rect x="230" y="186" width="150" height="46" rx="4" fill="var(--kv-soft)" stroke="var(--kv)"/>
+              <text x="305" y="205" text-anchor="middle" fill="var(--ink)" font-weight="600">#65546</text>
+              <text x="305" y="222" text-anchor="middle" fill="var(--muted)" font-size="11">309 source lines</text>
+              <rect x="440" y="186" width="150" height="46" rx="4" fill="var(--kv-soft)" stroke="var(--kv)"/>
+              <text x="515" y="205" text-anchor="middle" fill="var(--ink)" font-weight="600">#67294</text>
+              <text x="515" y="222" text-anchor="middle" fill="var(--muted)" font-size="11">209 source lines</text>
+              <!-- lane 4 -->
+              <rect x="230" y="266" width="150" height="46" rx="4" fill="var(--code-bg)" stroke="var(--muted)" stroke-dasharray="4 3"/>
+              <text x="305" y="285" text-anchor="middle" fill="var(--ink)" font-weight="600">vllm#65549</text>
+              <text x="305" y="302" text-anchor="middle" fill="var(--muted)" font-size="11">11 source lines</text>
+              <rect x="440" y="266" width="150" height="46" rx="4" fill="var(--code-bg)" stroke="var(--muted)" stroke-dasharray="4 3"/>
+              <text x="515" y="285" text-anchor="middle" fill="var(--ink)" font-weight="600">omni#9849</text>
+              <text x="515" y="302" text-anchor="middle" fill="var(--muted)" font-size="11">51 source lines</text>
+            </g>
+            <g stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#arr)">
+              <line x1="380" y1="49" x2="436" y2="49"/>
+              <line x1="380" y1="129" x2="436" y2="129"/>
+              <line x1="590" y1="129" x2="646" y2="129"/>
+              <line x1="380" y1="209" x2="436" y2="209"/>
+              <line x1="380" y1="289" x2="436" y2="289"/>
+            </g>
+            <g font-size="11" fill="var(--muted)">
+              <text x="636" y="45">independent</text>
+            </g>
+          </svg>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>stage 1: the model alone</span>
+          <span><i style="background:var(--kv-soft);border:1px solid var(--kv)"></i>stage 2: adds a frontend plugin</span>
+                    <span><i style="background:var(--code-bg);border:1px dashed var(--muted)"></i>draft or optional</span>
+        </div>
+        <figcaption>An arrow points from a pull request to the one stacked on it. "Source lines" counts added lines
+          outside <code>tests/</code> and <code>docs/</code> in the pull request's own commits.</figcaption>
+      </figure>
+
+      <figure>
+        <div class="bars" role="img" aria-label="Added lines per pull request, split into source, tests and docs">
+          <!-- scale: 6,133 added lines (#67375) = 100% -->
+          <div class="bar-row"><span class="lab">#67374<small>RFC 1</small></span><span class="bar"><i class="src" style="width:24.96%"></i><i class="tst" style="width:46.86%"></i><i class="doc" style="width:5.33%"></i></span><span class="fig">source 1,531 &middot; tests 2,874 &middot; docs 327</span></div>
+          <div class="bar-row"><span class="lab">#67375<small>RFC 1</small></span><span class="bar"><i class="src" style="width:24.90%"></i><i class="tst" style="width:65.81%"></i><i class="doc" style="width:9.29%"></i></span><span class="fig">source 1,527 &middot; tests 4,036 &middot; docs 570</span></div>
+          <div class="bar-row"><span class="lab">#67583<small>RFC 1</small></span><span class="bar"><i class="src" style="width:6.28%"></i><i class="tst" style="width:48.70%"></i><i class="doc" style="width:8.89%"></i></span><span class="fig">source 385 &middot; tests 2,987 &middot; docs 545</span></div>
+          <div class="bar-row"><span class="lab">#65546<small>RFC 2</small></span><span class="bar"><i class="src" style="width:5.04%"></i><i class="tst" style="width:10.52%"></i><i class="doc" style="width:0.78%"></i></span><span class="fig">source 309 &middot; tests 645 &middot; docs 48</span></div>
+          <div class="bar-row"><span class="lab">#67294<small>RFC 2</small></span><span class="bar"><i class="src" style="width:3.41%"></i><i class="tst" style="width:11.87%"></i><i class="doc" style="width:0.64%"></i></span><span class="fig">source 209 &middot; tests 728 &middot; docs 39</span></div>
+          <div class="bar-row"><span class="lab">#67144<small>fix</small></span><span class="bar"><i class="src" style="width:0.42%"></i><i class="tst" style="width:6.69%"></i><i class="doc" style="width:0.20%"></i></span><span class="fig">source 26 &middot; tests 410 &middot; docs 12</span></div>
+          <div class="bar-row"><span class="lab">#67151<small>fix</small></span><span class="bar"><i class="src" style="width:1.09%"></i><i class="tst" style="width:2.56%"></i><i class="doc" style="width:0.20%"></i></span><span class="fig">source 67 &middot; tests 157 &middot; docs 12</span></div>
+          <div class="bar-row"><span class="lab">#67139<small>fix</small></span><span class="bar"><i class="src" style="width:0.18%"></i><i class="tst" style="width:3.03%"></i></span><span class="fig">source 11 &middot; tests 186</span></div>
+          <div class="bar-row"><span class="lab">vllm#65549<small>RFC 3, draft</small></span><span class="bar"><i class="src" style="width:0.18%"></i></span><span class="fig">source 11</span></div>
+          <div class="bar-row"><span class="lab">omni#9849<small>RFC 3, draft</small></span><span class="bar"><i class="src" style="width:0.83%"></i><i class="tst" style="width:1.43%"></i></span><span class="fig">source 51 &middot; tests 88</span></div>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--accent)"></i>source</span>
+          <span><i style="background:var(--tests)"></i>tests</span>
+          <span><i style="background:var(--docs)"></i>docs</span>
+        </div>
+        <figcaption>Added lines in each pull request's own commits, drawn to one scale (the full width is 6,133
+          lines, #67375's total). Counted from the GitHub compare API on 2026-11-17: a stacked pull request's own diff is
+          the compare between its parent's head and its own head. Deleted lines are not drawn; no pull request
+          deletes more than 135.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Merge order -->
+<section id="order">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">4 &middot; Merge order</p>
+      <h2>What to review first</h2>
+      <p>The order follows what each serving stage needs. Steps 1, 2 and 3 do not depend on each other, so
+        different reviewers can take them in parallel.</p>
+    </div>
+    <ol class="order col">
+      <li><div><b>#67144, then #67151.</b> Two speech-to-text fixes, 93 source lines together. Stage 1 needs
+        #67151: without its two request fields, the model cannot refuse beam search.</div></li>
+      <li><div><b>#67374, then #67375, then #67583.</b> The state pool, scheduling, release fence, stream
+        admission and model hooks: the core of stage 1. In #67375 review its last three commits, and in #67583
+        its last two. The current plugin release requires #67583's hooks, which let a persistent-state model
+        capture its own CUDA graphs.</div></li>
+      <li><div><b>#65546, then #67294.</b> Endpoint plugin start, stop, readiness and drain. These are the core
+        of stage 2. A frontend plugin works with #65546 alone; #67294 adds <code>/ready</code> and
+        coordinated draining.</div></li>
+      <li><div><b>#67139.</b> An independent fix that refuses new <code>/v1/realtime</code> sessions during
+        shutdown. Merge it at any time.</div></li>
+      <li><div><b>vllm#65549, then vllm-omni#9849.</b> RFC 3. Both are drafts until vLLM-Omni catches up with
+        vLLM <code>main</code>; only vLLM-Omni serving depends on them.</div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- 5. RFC 1 -->
+<section id="rfc1">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">5 &middot; RFC 1 &middot; <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a></p>
+      <h2>Scheduler-owned persistent state</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack rfc-intro">
+        <p>Core owns the state's lifetime: allocation, admission, scheduling and safe release. The model, in an
+          out-of-tree plugin, owns the computation and the layout. A model declares its page with
+          <code>PersistentStateSpec</code> (tensor shapes, element types, offsets, alignment and initial
+          values). Core allocates the pages from the existing block pool, and the worker exposes typed
+          views of them.</p>
+        <p>The first consumer is the out-of-tree plugin
+          <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">vllm-nemotron-asr-streaming-plugin</a>.
+          Sohaib Ahmad's <a href="https://github.com/vllm-project/vllm/pull/59827">#59827</a> added complete-audio
+          transcription for the same checkpoint; the plugin adds streaming sessions, and serves complete files on
+          the same server.</p>
+      </div>
+      <div class="prs">
+        <article class="pr">
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67374">#67374</a><span class="title">State pool, scheduling and release fence</span><span class="tag s1">stage 1</span></div>
+          <dl>
+            <dt>Adds</dt><dd>A fixed GPU pool of per-request state slots, sized <code>max_num_seqs + 1</code>.
+              <code>StateScheduler</code>, a subclass of <code>Scheduler</code>, binds one slot to a request across
+              steps and across stream inputs. The release fence returns a slot only after the worker's completion
+              event covers the request's last step and cleanup.</dd>
+            <dt>Review</dt><dd>One commit. New files <code>vllm/v1/core/sched/state_scheduler.py</code> and
+              <code>vllm/v1/worker/gpu/state_slots.py</code>; design in <code>docs/design/persistent_state.md</code>.</dd>
+            <dt>Who is affected</dt><dd>Only models that declare <code>supports_persistent_state = True</code>.
+              The pool and <code>StateScheduler</code> exist only when the KV cache layout holds a persistent-state
+              group. Other engines get no-op scheduler hooks and new wire fields with defaults.</dd>
+            <dt>Own diff</dt><dd class="mono">38 files, +4,732 / &minus;31 (source +1,531)</dd>
+          </dl>
+        </article>
+        <article class="pr">
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67375">#67375</a><span class="title">Stream admission and admitted streams in AsyncLLM</span><span class="tag s1">stage 1</span></div>
+          <dl>
+            <dt>Adds</dt><dd><code>EngineCore.admit_stream</code>, which reserves a slot before the first input or
+              refuses with a reason (<code>request_id_in_use</code>, <code>capacity</code>, <code>active_limit</code>,
+              <code>engine_paused</code>). <code>AsyncLLM.generate(..., stream_admission=True)</code> feeds inputs,
+              keeps the session open after a rejected input and enforces deadlines from
+              <code>--stream-admission-timeouts</code>. <code>wait_stream_retired</code> and slot counters in
+              <code>SchedulerStats</code> complete it.</dd>
+            <dt>Review</dt><dd>The last three commits: [Doc], [Core] and [Frontend]. Main files:
+              <code>async_llm.py</code>, <code>core_client.py</code>, new <code>stream_admission.py</code>,
+              <code>output_processor.py</code>.</dd>
+            <dt>Who is affected</dt><dd>The existing <code>StreamingInput</code> path is unchanged for engines
+              without persistent state.</dd>
+            <dt>Own diff</dt><dd class="mono">25 files, +6,133 / &minus;135 (source +1,527)</dd>
+          </dl>
+        </article>
+        <article class="pr">
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67583">#67583</a><span class="title">Model hooks for CUDA graph capture, warmup, shutdown and memory contributors</span><span class="tag s1">stage 1</span></div>
+          <dl>
+            <dt>Adds</dt><dd>Six <code>ModelState</code> hooks: <code>needs_cudagraph_capture</code>,
+              <code>capture_cudagraphs</code>, <code>clear_cudagraphs</code>, <code>prepare_execution_memory</code>,
+              <code>post_warmup</code> and <code>shutdown</code>. A persistent-state model uses them to capture its
+              own CUDA graphs over its state pages, inside core's graph-memory estimate, and to budget its execution
+              memory before core sizes the KV cache.</dd>
+            <dt>Review</dt><dd>The last two commits. Source is about 385 lines across <code>model_runner.py</code>,
+              <code>state_slots.py</code>, <code>cudagraph_utils.py</code> and <code>model_states/interface.py</code>.</dd>
+            <dt>Who is affected</dt><dd>Nobody else: every hook defaults to a no-op, and the capture predicate
+              defaults to <code>False</code>.</dd>
+            <dt>Own diff</dt><dd class="mono">20 files, +3,917 / &minus;53 (source +385)</dd>
+          </dl>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 6. RFC 2 -->
+<section id="rfc2">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">6 &middot; RFC 2 &middot; <a href="https://github.com/vllm-project/vllm/issues/65545">vllm#65545</a></p>
+      <h2>Lifecycle hooks for endpoint plugins</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack rfc-intro">
+        <p>An endpoint plugin can register routes, but core never tells it when the server starts accepting
+          traffic or begins to shut down. A plugin that holds long-lived connections, such as a gRPC listener or
+          a WebSocket session, has no point at which to drain before the engine stops. RFC 2 adds that point
+          for any endpoint plugin, not for one model.</p>
+        <p>The pull requests follow the RFC review: typed Protocols, <code>/health</code> unchanged, a separate
+          readiness endpoint, isolated drains, and two stages. The realtime shutdown bug that the review raised
+          is a separate pull request, <a href="#fixes">#67139</a>.</p>
+      </div>
+      <div class="prs">
+        <article class="pr">
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/65546">#65546</a><span class="title">Endpoint plugin startup and cleanup hooks</span><span class="tag s2">stage 2</span></div>
+          <dl>
+            <dt>Adds</dt><dd>Optional <code>SupportsStart</code> and <code>SupportsStop</code> Protocols.
+              <code>start</code> runs in load order before HTTP accepts, with rollback on failure; <code>stop</code>
+              runs in reverse order, isolated, with a deadline from
+              <code>VLLM_ENDPOINT_PLUGIN_STOP_TIMEOUT_SECONDS</code> (default 5). Adds
+              <code>state.request_shutdown()</code>.</dd>
+            <dt>Who is affected</dt><dd>Plugins without <code>start</code> or <code>stop</code> are unchanged. Two
+              changes reach every server: a repeated SIGINT or SIGTERM now exits once the engine has stopped, and a
+              failed startup on Uvicorn below 0.50 exits with status 3 instead of 0.</dd>
+            <dt>Review state</dt><dd>The Claude review bot reported "Nothing blocking" on 2026-11-16, at a
+              maintainer's request. No human review yet.</dd>
+            <dt>Own diff</dt><dd class="mono">13 files, +1,002 / &minus;34 (source +309)</dd>
+          </dl>
+        </article>
+        <article class="pr">
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67294">#67294</a><span class="title">Endpoint plugin readiness and coordinated draining</span><span class="tag s2">stage 2</span></div>
+          <dl>
+            <dt>Adds</dt><dd>Optional <code>SupportsReady</code> and <code>SupportsDrain</code> Protocols and
+              <code>GET /ready</code>, which returns 503 while draining, on <code>EngineDeadError</code>, or when a
+              plugin is not ready. On shutdown, core sets <code>state.draining</code> and runs plugin drains
+              concurrently under the <code>--shutdown-timeout</code> deadline, before engine shutdown.</dd>
+            <dt>Review</dt><dd>Stacked on #65546, which it merges rather than rebases; its own diff starts at
+              #65546's head <code>7e2031fcc5</code>.</dd>
+            <dt>Who is affected</dt><dd><code>/health</code> and <code>/ping</code> are unchanged.
+              <code>/ready</code> is a new endpoint; the Kubernetes docs point readiness probes at it.</dd>
+            <dt>Own diff</dt><dd class="mono">13 files, +976 / &minus;60 (source +209)</dd>
+          </dl>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Fixes -->
+<section id="fixes">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">7 &middot; Bug fixes</p>
+      <h2>Three speech-to-text fixes, found while serving streaming ASR</h2>
+      <p>Each fix applies to every speech-to-text user, not only to persistent-state models.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Pull request</th><th>Today</th><th>With the fix</th><th class="num">Source lines</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://github.com/vllm-project/vllm/pull/67144" class="mono">#67144</a><br><span class="muted">Fail requests that finish with error or abort</span></td>
+            <td>A transcription that ends with <code>error</code> or an engine <code>abort</code> returns HTTP 200 with a partial transcript.</td>
+            <td><code>error</code> returns 500 and <code>abort</code> returns 503. The handler cancels sibling chunks of long audio. <code>length</code> and <code>repetition</code> still return 200.</td>
+            <td class="num">26</td></tr>
+          <tr><td><a href="https://github.com/vllm-project/vllm/pull/67151" class="mono">#67151</a><br><span class="muted">Pass two request fields to models; stacked on #67144</span></td>
+            <td>A model cannot see <code>use_beam_search</code> or <code>max_completion_tokens</code>, so it cannot refuse them. A chunk truncated by a server limit returns 200.</td>
+            <td>The fields reach <code>SpeechToTextParams</code>; a model refuses with <code>ValueError</code>, which returns 400. A server-limit truncation returns 422.</td>
+            <td class="num">67</td></tr>
+          <tr><td><a href="https://github.com/vllm-project/vllm/pull/67139" class="mono">#67139</a><br><span class="muted">Refuse new realtime sessions during shutdown</span></td>
+            <td>After SIGTERM, a new <code>/v1/realtime</code> WebSocket receives <code>session.created</code> and starts work that shutdown then cuts off.</td>
+            <td>The server accepts and closes it with code 1001, "Server shutting down". Sessions opened before the signal are unaffected.</td>
+            <td class="num">11</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 8. RFC 3 -->
+<section id="rfc3">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">8 &middot; RFC 3 &middot; <a href="https://github.com/vllm-project/vllm-omni/issues/9848">vllm-omni#9848</a></p>
+      <h2>vLLM-Omni on Model Runner V2, consuming the core interfaces</h2>
+    </div>
+    <div class="col stack">
+      <p>RFC 3 replaces an earlier Omni-only design that changed code at nearly every level of vLLM-Omni.
+        A reviewer advised that ASR state belongs in vLLM core on MRv2, and RFC 1 follows that advice. RFC 3 keeps only
+        multi-stage orchestration and inter-stage transfer in vLLM-Omni.</p>
+      <p><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a> adds
+        <code>GPUModelRunner._init_model_state()</code> (+11 / &minus;3 in <code>model_runner.py</code>), so an
+        MRv2 runner subclass can supply its own <code>ModelState</code> without patching a module-level factory.
+        The default method calls the same factory with the same arguments.
+        <a href="https://github.com/vllm-project/vllm-omni/pull/9849">vllm-omni#9849</a> overrides it in
+        <code>OmniGPUModelRunner</code>. Both stay drafts until vLLM-Omni catches up with vLLM <code>main</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 9. Evidence -->
+<section id="evidence">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">9 &middot; Evidence</p>
+      <h2>Measured on a stage 1 build with the first consumer</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>The stage 1 build is vLLM <code>main</code> with the RFC 1 pull requests, #67144 and #67151 merged on a
+          fork branch (<a href="https://github.com/pdtgct/vllm/tree/hook-build-20261114b"><code>hook-build-20261114b</code></a>
+          at <code>9c40a6ffd6</code>). On one NVIDIA A40 at FP32, with the plugin's default 320 ms lookahead,
+          CUDA graphs captured through #67583's hooks, and <code>--max-num-seqs 64</code>:</p>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Run</th><th class="num">Sessions</th><th class="num">Concurrency</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>LibriSpeech test-clean and test-other over core's <code>/v1/realtime</code></td><td class="num">5,559</td><td class="num">32</td><td>Every session ended <code>stop</code>. WER 3.57 % (test-clean) and 7.99 % (test-other).</td></tr>
+            <tr><td>LibriSpeech test-clean</td><td class="num">640</td><td class="num">64</td><td>Every session reached a final transcript. WER 2.89 %.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col stack">
+        <p>The server logged no preemption and no error. The plugin's
+          <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin#readme">README</a> lists each
+          result with its tier, build and plugin revision. Its
+          <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/blob/main/docs/quickstart.md">quick start</a>
+          reproduces both serving stages with one <code>vllm serve</code> command each. Stage 2 adds the
+          <a href="https://github.com/pdtgct/vllm-riva-frontend">vllm-riva-frontend</a> endpoint plugin on a
+          build that also carries #65546 and #67294.</p>
+        <p class="muted">Known limit: a whole-file request in flight slows concurrent streams on the same server.
+          On an earlier integration build, eight streams' p95 final latency rose from 0.55 s to 3.64 s with one
+          293 s file in flight.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 10. Status -->
+<section id="status">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">10 &middot; Status and what we ask</p>
+      <h2>Nothing is merged, and no CI has run</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Pull request</th><th>State</th><th>Human review</th><th>Checks</th></tr></thead>
+          <tbody>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>Ready for review; <code>needs-rebase</code> since 2026-11-16</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a>, <a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>Ready for review; mergeable</td><td>None; bot review "Nothing blocking"</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67144">#67144</a>, <a href="https://github.com/vllm-project/vllm/pull/67151">#67151</a>, <a href="https://github.com/vllm-project/vllm/pull/67139">#67139</a></td><td>Ready for review</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Drafts</td><td>None</td><td>Not requested</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note col">
+        <p><b>Why CI has not run.</b> <code>pre-run-check</code> requires a <code>ready</code>, <code>verified</code>
+          or <code>ready-run-all-tests</code> label, or an author with at least four merged pull requests. The author
+          has none merged yet, so Buildkite has not run on any of these pull requests. The pull request bodies record
+          the CPU and A40 test runs done instead.</p>
+      </div>
+      <div class="col stack">
+        <h3>What we ask of maintainers</h3>
+        <ol class="stack" style="gap:0.45rem;margin:0;padding-left:1.3rem">
+          <li>Add the <code>ready</code> label to the pull requests you are willing to test, starting with #67144, #67151, #67374 and #65546.</li>
+          <li>Review in the <a href="#order">merge order</a> above, one RFC per reviewer if that fits your areas.</li>
+          <li>Comment on <a href="https://github.com/vllm-project/vllm/issues/65543">RFC 1</a> if you know other work that should share this primitive.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Pull request facts read from GitHub on 2026-11-17 at 01:15 UTC; line counts from the GitHub compare API.</p>
+    <p>RFCs: <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a> &middot; <a href="https://github.com/vllm-project/vllm/issues/65545">vllm#65545</a> &middot; <a href="https://github.com/vllm-project/vllm-omni/issues/9848">vllm-omni#9848</a>. Source for this page: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
+  </div>
+</footer>
+</body>
+</html>
