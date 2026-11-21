@@ -2,6 +2,8 @@
 
 Pete Tanski's ([@pdtgct](https://github.com/pdtgct)) issues, RFCs and pull requests in the [vllm-project](https://github.com/vllm-project) organization, with the fork branches that wait to be opened as pull requests.
 
+Live status, with views by RFC, is in the GitHub Project [vLLM contributions](https://github.com/users/pdtgct/projects/1). The Project shows each issue and pull request's current state; the tables below are a dated snapshot.
+
 Last updated 2026-11-21. Status and head commits come from GitHub on that date; the lists come from `gh search` by author, which can miss items.
 
 `vllm-project/vllm` limits contributors without write access to 6 open pull requests ([CONTRIBUTING.md, "Pull Request Limits and Escalation"](https://github.com/vllm-project/vllm/blob/main/CONTRIBUTING.md)). Pete has 9 open there, so new pull requests wait on fork branches until some close.
@@ -76,10 +78,4 @@ Public repositories that carry or support this work.
 
 ## Refreshing this page
 
-These commands list the open items. Then update the tables by hand.
-
-```bash
-gh search prs --author pdtgct --owner vllm-project --state open --json repository,number,title,isDraft --jq '.[] | [.repository.name, .number, .isDraft, .title] | @tsv'
-gh search issues --author pdtgct --owner vllm-project --state open --json repository,number,title --jq '.[] | [.repository.name, .number, .title] | @tsv'
-gh pr view <number> --repo vllm-project/vllm --json headRefOid,isDraft,reviewDecision,mergeable
-```
+Add a new issue or pull request to the Project, and set its Effort, RFC, Next action and Fork branch fields. Add a pull request that is not yet open as a draft item titled `[To open] ...`, and convert it when the pull request opens. Refresh the tables here when an RFC or effort changes.
