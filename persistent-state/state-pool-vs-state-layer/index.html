@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>State Pool vs State Layer</title>
+<meta name="description" content="How the persistent-state pool in vllm#67374 compares with the Mamba state layer in pdtgct/vllm#6, with the results of porting the Nemotron ASR streaming plugin onto the state layer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: the persistent-state guide's tokens and reading column; tables and figures widen to 64rem. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #161a21;
+  --muted: #586170;
+  --rule: #d9dde4;
+  --accent: #0d6b66;      /* our state pool, links */
+  --accent-soft: #dcefed;
+  --state: #b0640c;       /* PR 6 changes and open gaps: amber */
+  --state-soft: #f6e7d3;
+  --kv: #3552c8;
+  --kv-soft: #e1e7fb;
+  --ok: #2c7a3f;
+  --ok-soft: #dff0e3;
+  --warn: #a15c00;
+  --code-bg: #eef0f3;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+    --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+    --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+    --code-bg: #1d222b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+  --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+  --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+  --code-bg: #1d222b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--f-body);
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.wrap {
+  max-width: 64rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.col { max-width: 44rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code, .mono { font-family: var(--f-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto; font: 0.82rem/1.5 var(--f-mono); }
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c { color: var(--muted); }
+h1, h2, h3 { font-family: var(--f-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(1.45rem, 3vw, 1.9rem); font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1.4 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+.stack-lg { display: flex; flex-direction: column; gap: 1.6rem; }
+ul.plain { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.4rem; }
+
+header.top { border-bottom: 1px solid var(--rule); background: var(--surface); }
+header.top .wrap { padding-block: 2.6rem 2.2rem; display: flex; flex-direction: column; gap: 1.1rem; }
+.lede { font-size: 1.15rem; max-width: 44rem; }
+.ask { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; margin-top: 0.4rem; }
+.ask div { border-top: 3px solid var(--accent); padding-top: 0.55rem; min-width: 0; }
+.ask div.amber { border-top-color: var(--state); }
+.ask b { display: block; font-family: var(--f-display); font-size: 1.05rem; }
+.ask span { color: var(--muted); font-size: 0.92rem; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.9rem; padding-top: 0.4rem; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+section { padding-block: 3rem 0.5rem; }
+section > .wrap > .head { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.3rem; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 0.7rem; max-width: 52rem; }
+.scroll { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+svg text { font-family: var(--f-body); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.id { font: 500 0.85rem var(--f-mono); white-space: nowrap; }
+td.name { font-weight: 600; }
+.table-box { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.table-box table { min-width: 44rem; }
+
+.tag { display: inline-block; font: 500 0.72rem/1.5 var(--f-mono); padding: 0 0.45em; border-radius: 3px; white-space: nowrap; }
+.tag.open { background: var(--state-soft); color: var(--state); }
+.tag.fix { background: var(--accent-soft); color: var(--accent); }
+.tag.pass { background: var(--ok-soft); color: var(--ok); }
+.tag.part { background: var(--kv-soft); color: var(--kv); }
+.tag.none { background: var(--code-bg); color: var(--muted); }
+
+.cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.cmp > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; min-width: 0; }
+.cmp .ours { border-top: 4px solid var(--accent); }
+.cmp .pr6 { border-top: 4px solid var(--state); }
+.cmp h3 { font-size: 1.05rem; margin-bottom: 0.5rem; }
+.cmp ul { margin: 0; padding-left: 1.1rem; font-size: 0.93rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+.note { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--ok); border-radius: 6px; padding: 0.9rem 1.1rem; font-size: 0.94rem; }
+
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.pair > div { min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+
+footer { border-top: 1px solid var(--rule); margin-top: 3.5rem; background: var(--surface); }
+footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.4rem; }
+
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">vLLM persistent state &middot; design comparison &middot; 2026-11-20</p>
+    <h1>State pool vs state layer</h1>
+    <p class="lede"><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a> keeps per-session
+      state that tokens cannot rebuild in a state pool with its own scheduler, slot handles and release fence.
+      Lucas Wilkinson's draft, <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, keeps the same
+      state as a Mamba state block that <code>MambaManager</code> allocates, plus one flag,
+      <code>ManagerConfig.recomputable</code>. To test the draft, we ported the
+      <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">Nemotron ASR streaming plugin</a>
+      onto it and ran one round on an A40.</p>
+    <div class="ask">
+      <div><b>Same transcripts</b><span>All 200 LibriSpeech utterances over <code>/v1/realtime</code> match the baseline, also with the pool cut to 8 state blocks.</span></div>
+      <div class="amber"><b>Five gaps need core changes</b><span>Admission, per-request failure, engine death when worker rows run out, history growth and the model hooks.</span></div>
+      <div><b>Smaller core change</b><span>PR 6 is 34 lines under <code>vllm/</code> against <code>main</code>, and deletes 4,686 lines of #67374.</span></div>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#summary">Summary</a>
+      <a href="#result">A40 result</a>
+      <a href="#gaps">Core gaps</a>
+      <a href="#plugin">Plugin changes</a>
+      <a href="#map">Where each piece lives</a>
+      <a href="#lifecycle">Session lifecycle</a>
+      <a href="#fence">Release fence</a>
+      <a href="#length">Session length</a>
+      <a href="#code">Model code</a>
+      <a href="#compare">Side by side</a>
+      <a href="#sources">Sources</a>
+    </nav>
+    <p class="muted" style="font-size:0.9rem">Part of the <a href="../">persistent-state reviewer guide</a>.</p>
+  </div>
+</header>
+
+<main>
+
+<section id="summary">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">1 &middot; Summary</p>
+      <h2>Two ways to keep state that tokens cannot rebuild</h2>
+    </div>
+    <div class="cmp">
+      <div class="ours">
+        <h3>Our state pool (#67374 at <code>2e7dfe972b</code>)</h3>
+        <ul>
+          <li>A separate lifetime policy for state that tokens cannot rebuild.</li>
+          <li><code>PersistentStateSpec</code> declares named components and their initializers.</li>
+          <li><code>StateScheduler</code> and <code>StateSlotManager</code> own each slot; handles carry (epoch, slot, generation).</li>
+          <li>A release fence frees a slot only after the GPU confirms its last write.</li>
+          <li>Refuses async scheduling, runner CUDA graphs, prefix caching, parallelism and other options.</li>
+        </ul>
+      </div>
+      <div class="pr6">
+        <h3>PR 6 state layer (<code>4582db799d</code>)</h3>
+        <ul>
+          <li>Ordinary requests over a Mamba state block, plus one flag.</li>
+          <li>A <code>MambaSpec</code> layer that <code>MambaManager</code> allocates.</li>
+          <li>The standard scheduler; slots come from the Mamba metadata builder's state indices.</li>
+          <li>No release fence: one stream orders every step's writes.</li>
+          <li>No refusals specific to state.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="result">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">2 &middot; Result</p>
+      <h2>On one A40, the plugin on PR 6 gives the same final transcripts as on our current core</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Each run served the first 200 LibriSpeech test-clean utterances over <code>/v1/realtime</code>, with
+          audio paced in real time in 320 ms chunks. Three builds ran on the same pod:</p>
+        <ul class="plain">
+          <li><b>A</b>, the baseline: our core at <code>9c40a6ffd6</code> with plugin <code>main</code> at <code>acdb5b1</code>.</li>
+          <li><b>B</b>, PR 6: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a> at <code>92c0e64b68</code> with the plugin port <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a> at <code>57878f2447</code>.</li>
+          <li><b>C</b>, PR 6 with bounded history: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-bounded-history-20261120"><code>poc/pr6-bounded-history-20261120</code></a> at <code>566ef9259f</code> with the same plugin port.</li>
+        </ul>
+        <p>Build B is PR 6's head plus the model-state CUDA graph hooks and warmup skip from #67583, five
+          speech-to-text frontend commits from #67144 and #67151 that the baseline also carries, and one stub test.</p>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>ID</th><th>Check</th><th>Outcome</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td class="id">G1</td><td class="name">Slot reuse</td><td>With 9 blocks (8 usable state slots plus core's null block), 200 sessions at concurrency 8 give final transcripts equal to the baseline's.</td><td><span class="tag pass">pass</span></td></tr>
+            <tr><td class="id">G2</td><td class="name">200 utterances at concurrency 32</td><td>Build B's 200 final transcripts equal build A's, utterance for utterance, at a WER of 2.55%. A second baseline run also matched, so the noise floor is zero differences. Every run records 200 terminal <code>stop</code> finishes and no terminal <code>length</code> finish. <code>/v1/realtime</code> does not report per-turn finish reasons, so a turn that parked on <code>length</code> would not show.</td><td><span class="tag pass">pass</span></td></tr>
+            <tr><td class="id">G3</td><td class="name">Step time</td><td>Mean interval between output timestamps: A 30.19 and 31.01 ms, B 31.55 ms. This is not engine step time, and the two builds sit on different upstream bases. One round cannot separate a small slowdown from run-to-run variation.</td><td><span class="tag none">not established</span></td></tr>
+            <tr><td class="id">G4</td><td class="name">Startup memory</td><td>Core sizes the state pool from free memory: 6,439 blocks (37.87 GiB), where our core allocated 65 pages. GPU memory after startup is 43,315 MiB against 4,927 MiB. No out-of-memory error with the extensible KV cache on.</td><td><span class="tag pass">pass</span></td></tr>
+            <tr><td class="id">G5</td><td class="name">Stop token under async scheduling</td><td>The stub test shows that under async scheduling a stop token sampled before <code>max_tokens</code> is written into Mamba state, and under synchronous scheduling it is not. PR 6's claim that async scheduling is safe does not hold for this case.</td><td><span class="tag open">hazard confirmed</span></td></tr>
+            <tr><td class="id">G6</td><td class="name">Bounded-history trim</td><td>7 of 7 core tests pass on build C, both bounded-history variants included. Build C's 200 final transcripts equal build A's.</td><td><span class="tag pass">pass</span></td></tr>
+            <tr><td class="id">G7</td><td class="name">Plugin GPU test tiers</td><td>Registration: 2 pass, and 1 fails because <code>-cc.mode none</code> now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. Transcription: the whole-file tests that ran pass. The tier stopped making progress and was killed at its 1,800 s timeout, most likely in test setup or teardown; the cause is unresolved. It ran without its test audio and included tests of features the port removes.</td><td><span class="tag part">partial</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Run</th><th class="num">Concurrency</th><th class="num">Final p50</th><th class="num">Final p90</th><th class="num">Final p99</th><th class="num">First segment p50</th><th class="num">First segment p90</th></tr></thead>
+          <tbody>
+            <tr><td>A, run 1</td><td class="num">32</td><td class="num">151.1 ms</td><td class="num">193.3 ms</td><td class="num">295.5 ms</td><td class="num">733.5 ms</td><td class="num">1,083.4 ms</td></tr>
+            <tr><td>A, run 2</td><td class="num">32</td><td class="num">154.6 ms</td><td class="num">197.1 ms</td><td class="num">281.0 ms</td><td class="num">725.1 ms</td><td class="num">1,085.2 ms</td></tr>
+            <tr><td>B</td><td class="num">32</td><td class="num">158.8 ms</td><td class="num">199.1 ms</td><td class="num">281.8 ms</td><td class="num">722.5 ms</td><td class="num">1,093.2 ms</td></tr>
+            <tr><td>C</td><td class="num">32</td><td class="num">151.6 ms</td><td class="num">192.7 ms</td><td class="num">289.2 ms</td><td class="num">729.0 ms</td><td class="num">1,103.0 ms</td></tr>
+            <tr><td>B, 8 state blocks</td><td class="num">8</td><td class="num">89.9 ms</td><td class="num">133.8 ms</td><td class="num">167.7 ms</td><td class="num">708.8 ms</td><td class="num">1,040.2 ms</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col stack">
+        <p class="muted" style="font-size:0.9rem">Final latency runs from the client's final commit after the last audio to
+          <code>transcription.done</code>; first-segment latency runs from the first audio append to the first non-empty
+          delta. Paired by utterance against A run 1, the median final-latency difference is &minus;2.5 ms for A run 2,
+          +3.0 ms for B and &minus;0.8 ms for C. One round does not establish a latency difference.</p>
+        <p class="muted" style="font-size:0.9rem">Not measured: audio longer than 30.04 s (the utterances run 1.87 to
+          30.04 s), so no session was long enough to show per-turn growth; the worker-row exhaustion of
+          <a href="#gaps">B2</a>; admission beyond capacity; and async scheduling with the plugin.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="gaps">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">3 &middot; Core gaps</p>
+      <h2>Five gaps need a core change before the plugin can depend on PR 6</h2>
+      <p class="muted">B1 to B5 need core changes; B6 and B7 are behaviour changes to agree on. B1, B2 and B4 come from reading the source; the round did not exercise them.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>ID</th><th>Gap</th><th>Effect</th><th>Proposed fix</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="id">B1</td><td class="name">No per-request failure</td><td>PR 6 deletes <code>StateCompletion</code>, the only way a model can end one request with an error. A failed plugin row raises <code>RuntimeError</code>, the engine core treats it as fatal, and every client's request fails.</td><td>A core path that fails one request from the model, as <code>fail_requests</code> did in #67374.</td><td><span class="tag open">open</span></td></tr>
+          <tr><td class="id">B2</td><td class="name">Worker request rows can run out</td><td>A resumed session leaves <code>num_waiting_for_streaming_input</code> while it still holds its block and worker row. If the scheduler skips it in a step, the admission check (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1116-L1121"><code>scheduler.py</code> L1116&ndash;L1121</a>) can admit another request. The budget-fit pool gives that request a block, and the worker's free-row assertion (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/worker/gpu/states.py#L99"><code>states.py</code> L99</a>) fails, ending the engine.</td><td>Count every resident request in the active-request check, or cap the pool at <code>max_num_seqs + 1</code>.</td><td><span class="tag open">open</span></td></tr>
+          <tr><td class="id">B3</td><td class="name">Session history grows without bound</td><td><code>_update_request_as_session</code> appends each input to the prompt, and the scheduler-side request keeps every audio chunk: about 20 KiB per 320 ms, or about 225 MiB per session-hour. Each turn re-sends the cumulative prompt and every feature record, so the work per turn grows with the session. <code>max_model_len</code> is the hard limit.</td><td>Trim consumed history in <code>_update_request_as_session</code> when every KV group is <code>recomputable=False</code>, keeping one computed token (<a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a>). The trim restarts positions at 1 each turn, which is safe for this model only because its <code>forward</code> ignores <code>positions</code>.</td><td><span class="tag fix">fix on PoC branch</span></td></tr>
+          <tr><td class="id">B4</td><td class="name">No stream admission</td><td>#67375 does not rebase onto PR 6: its logic reads the deleted state scheduler. Without it, a session opened beyond capacity waits with no transcript, and a parked session holds its block until its client disconnects, because <code>/v1/realtime</code> has no timeout. <code>max_num_active_reqs</code> idle clients block every new session. A reservation made before any input would not count as held, because <code>_holds_kv_blocks</code> keys on <code>num_computed_tokens &gt; 0</code>.</td><td>Admission and idle reclaim on <code>MambaManager</code>, with deadlines for never-fed, parked-idle and draining streams.</td><td><span class="tag open">open</span></td></tr>
+          <tr><td class="id">B5</td><td class="name">Model hooks not in PR 6</td><td>#67583's capture and lifecycle hooks apply to PR 6 without conflict; its state-pool parts do not. Without a warmup skip for state that tokens cannot rebuild, core warmup feeds the plugin synthetic multi-token prefills. On build B the ported hooks capture the plugin's encoder and decoder graphs (1.51 GiB).</td><td>Rebase #67583 without its state-pool parts, with the warmup skip keyed on <code>recomputable=False</code>, as build B does.</td><td><span class="tag fix">fix on PoC branch</span></td></tr>
+          <tr><td class="id">B6</td><td class="name">A length stop parks the session</td><td>PR 6 deletes <code>ends_stream</code>. A turn stopped by <code>max_tokens</code> now parks, and the next input continues from mid-turn state. Under #67374 any stop other than end-of-stream ended the stream.</td><td>Agree the stop rule.</td><td><span class="tag open">open</span></td></tr>
+          <tr><td class="id">B7</td><td class="name">New pages are not initialized</td><td><code>MambaManager</code> does not zero new blocks (<code>zeroes_new_blocks = False</code>), and core's block zeroer skips state pools. A reused page keeps every byte its previous owner wrote that the new owner's first step does not overwrite. The plugin port zeroes the page and writes its initial values in the forward, on the runner stream.</td><td>Document that the model owns initialization, or zero new blocks when <code>recomputable=False</code>.</td><td><span class="tag open">open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="plugin">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">4 &middot; Plugin changes</p>
+      <h2>The plugin declares one Mamba layer and drops the features PR 6 cannot carry</h2>
+      <p class="muted">The plugin's state is one <code>MambaBase</code> layer with one <code>SHORT_CONV</code> <code>MambaSpec</code>. It needs no state-pool code from core. CPU suite on build B before the frontend commits were added: 1,403 passed, 746 failed, 52 errors; the baseline passes 2,170. Every failure traces to a row below, to a deleted core API, or to the 12 route-guard tests that pass once the frontend commits are added.</p>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Feature</th><th>In the port</th><th>Reason</th><th class="num">CPU tests</th></tr></thead>
+          <tbody>
+            <tr><td class="name">Stage 2 session factory</td><td>Dropped</td><td>Depends on admitted streams (B4).</td><td class="num">572</td></tr>
+            <tr><td class="name">Transaction graphs</td><td>Off</td><td>They need the pool layout and fixed pool addresses; the extensible KV cache, which PR 6 leaves on, rebinds the views.</td><td class="num">about 157</td></tr>
+            <tr><td class="name">Tests of deleted core APIs</td><td>Fail</td><td><code>PersistentStateSpec</code>, <code>StateSlotRows</code> and the plugin's dependency table.</td><td class="num">about 40</td></tr>
+            <tr><td class="name">Per-request failure isolation</td><td>Lost</td><td>Depends on B1.</td><td class="num">about 20</td></tr>
+            <tr><td class="name">Native burst</td><td>Refused</td><td>It rejects a request with history, and under PR 6 every turn after the first has history. Depends on B3.</td><td class="num">1</td></tr>
+            <tr><td class="name">Async scheduling</td><td>Still refused</td><td>PR 6 turns async scheduling on when the option is unset, so the serve command passes <code>--no-async-scheduling</code>. G5 shows the hazard remains.</td><td class="num">&mdash;</td></tr>
+            <tr><td class="name">CUDA graph mode</td><td>Set explicitly</td><td><code>-cc.mode none</code> alone now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. The plugin plans each step on the host and refuses core's outer capture, so it passes <code>-cc.cudagraph_mode none</code>. The requirement is the plugin's: core's capture hook runs under any mode.</td><td class="num">&mdash;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note col">
+        <p><b>What the port confirmed in PR 6's favour</b></p>
+        <ul class="plain" style="margin-top:0.5rem">
+          <li>Slot and freshness are equivalent: <code>block_ids[0][0]</code> is stable for a request's life, and <code>num_computed_tokens == 0</code> matches the builder's <code>has_initial_states_p</code>.</li>
+          <li>The plugin needs no release fence under synchronous scheduling (see <a href="#fence">Release fence</a>).</li>
+          <li>Budget-fit sizing with the startup floor matches the sizing we were considering for #67374.</li>
+          <li>The preemption raise cannot be reached in the plugin's layout: one state group in mode <code>none</code>, <code>block_size &gt;= max_model_len</code>, no speculative decoding and no KV connector.</li>
+          <li>Core's <code>/v1/realtime</code> hook works: 16 of 17 tests pass, and the one failure is the dropped session factory.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="map">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">5 &middot; Components</p>
+      <h2>Where each piece lives</h2>
+      <p class="muted">At every layer, PR 6 replaces our state-specific classes with upstream Mamba code and one new field, <code>ManagerConfig.recomputable</code>.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Layer</th><th>Our state pool</th><th>PR 6 state layer</th><th>PR 6 deletes</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Model</td><td><code>PersistentStateLayerBase(spec)</code>; the model class sets <code>supports_persistent_state = True</code>; a <code>ModelState</code> binds rows each step.</td><td>A <code>MambaBase</code> layer whose <code>get_kv_cache_config()</code> returns <code>MambaManager.layer_config(spec, recomputable=False)</code>. The stub reuses <code>mamba_type = SHORT_CONV</code>.</td><td><code>model_executor/layers/state.py</code></td></tr>
+          <tr><td class="name">Worker and runner</td><td><code>StateSlotBindings</code>: <code>bind_rows</code> checks each handle; <code>prepare_step</code> and <code>initialize_state_slots</code> hooks; <code>finish_step</code> records the completion event.</td><td>The Mamba metadata builder and <code>bind_kv_cache</code>: <code>state_indices_tensor_d</code> and <code>state_indices_tensor_p</code> give each row's block; <code>has_initial_states_p</code> marks a fresh one.</td><td><code>worker/gpu/state_slots.py</code>, <code>prepare_step</code>, <code>initialize_state_slots</code></td></tr>
+          <tr><td class="name">KV cache manager</td><td><code>PersistentStateManager</code>: one page per slot, <code>block_size = 1</code>; a pool of <code>max_num_seqs + 1</code> pages fixed at startup.</td><td><code>MambaManager</code>: one block per request, <code>block_size = max_model_len</code> in the stub; <code>recomputable</code> is the only new field.</td><td><code>PersistentStateSpec</code>, <code>PersistentStateManager</code></td></tr>
+          <tr><td class="name">Scheduler</td><td><code>StateScheduler</code> and <code>StateSlotManager</code>: allocate a slot at first schedule, park at end-of-stream, replace the prompt on the next input, retire and fence on finish.</td><td>The standard scheduler: a startup capacity check; <code>_preempt_request</code> raises; <code>reset_prefix_cache</code> never resets running requests.</td><td><code>state_scheduler.py</code>, <code>state_slot_manager.py</code></td></tr>
+          <tr><td class="name">Engine core and config</td><td>Refuses async scheduling, runner CUDA graphs, the extensible KV cache, prefix caching, TP, PP or DP above 1, speculative decoding and other options. Drains retiring slots before a cache clear.</td><td>No special cases: async scheduling and CUDA graphs stay available, and the extensible KV cache stays on.</td><td>The refusals and the retiring-slot drain</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="lifecycle">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">6 &middot; Lifecycle</p>
+      <h2>One streaming session, start to finish</h2>
+      <p class="muted">A <code>/v1/realtime</code> session is one resumable request that receives its audio in several inputs. Both designs keep the state page while the session waits for its next input. They differ in what the next input does and in when a closed session's page goes to another request.</p>
+    </div>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 760 480" width="760" role="img" aria-label="PR 6 frees a closed session's block at once; ours waits for the GPU" font-size="13">
+          <defs><marker id="life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
+          <text x="24" y="30" font-size="15" font-weight="600" fill="var(--ink)">PR 6 frees a closed session's block at once; ours waits for the GPU</text>
+          <text x="304" y="64" text-anchor="middle" font-weight="600" fill="var(--accent)">Our state pool (#67374)</text>
+          <text x="584" y="64" text-anchor="middle" font-weight="600" fill="var(--state)">PR 6 state layer</text>
+          <g font-weight="600" fill="var(--ink)">
+            <text x="24" y="112">First schedule</text>
+            <text x="24" y="192">Turn ends (EOS)</text>
+            <text x="24" y="272">Next input</text>
+            <text x="24" y="352">Close or abort</text>
+            <text x="24" y="432">Next owner</text>
+          </g>
+          <g fill="none" stroke="var(--muted)" stroke-width="1.25">
+            <path d="M304 136V158" marker-end="url(#life-arrow)"/><path d="M304 216V238" marker-end="url(#life-arrow)"/><path d="M304 296V318" marker-end="url(#life-arrow)"/><path d="M304 376V398" marker-end="url(#life-arrow)"/>
+            <path d="M584 136V158" marker-end="url(#life-arrow)"/><path d="M584 216V238" marker-end="url(#life-arrow)"/><path d="M584 296V318" marker-end="url(#life-arrow)"/><path d="M584 376V398" marker-end="url(#life-arrow)"/>
+          </g>
+          <g fill="var(--surface)" stroke="var(--rule)" stroke-width="1.25">
+            <rect x="176" y="80" width="256" height="56" rx="8"/><rect x="176" y="160" width="256" height="56" rx="8"/><rect x="176" y="240" width="256" height="56" rx="8"/><rect x="176" y="320" width="256" height="56" rx="8"/><rect x="176" y="400" width="256" height="56" rx="8"/>
+            <rect x="456" y="80" width="256" height="56" rx="8"/><rect x="456" y="160" width="256" height="56" rx="8"/><rect x="456" y="320" width="256" height="56" rx="8"/>
+          </g>
+          <g fill="var(--state-soft)" stroke="var(--state)" stroke-width="2">
+            <rect x="456" y="240" width="256" height="56" rx="8"/><rect x="456" y="400" width="256" height="56" rx="8"/>
+          </g>
+          <g text-anchor="middle" font-weight="600" fill="var(--ink)">
+            <text x="304" y="104">Slot 5 bound</text><text x="304" y="184">Parked</text><text x="304" y="264">Prompt replaced</text><text x="304" y="344">Retiring, still occupied</text><text x="304" y="424">Freed after StateCompletion</text>
+            <text x="584" y="104">Block 5 allocated</text><text x="584" y="184">Waiting for input</text><text x="584" y="264">Prompt extended</text><text x="584" y="344">Block freed at once</text><text x="584" y="424">Reused next step</text>
+          </g>
+          <g text-anchor="middle" font-size="11.5" fill="var(--muted)">
+            <text x="304" y="122">handle (e, 5, g); initializers run</text><text x="304" y="202">keeps slot 5</text><text x="304" y="282">request never grows</text><text x="304" y="362">cleanup sent to the worker</text><text x="304" y="442">fence joins streams; new handle g+1</text>
+            <text x="584" y="122">state indices point at block 5</text><text x="584" y="202">keeps block 5</text><text x="584" y="282">dropped past max_model_len (B3)</text><text x="584" y="362">no retiring state, no fence</text><text x="584" y="442">not zeroed; plugin initializes (B7)</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>Amber boxes mark where PR 6 changes the outcome: the prompt grows with every input (B3), and a reused block keeps its previous owner's bytes (B7).</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="fence">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">7 &middot; Release</p>
+      <h2>Why PR 6 can drop the release fence</h2>
+      <p class="muted">A slot is safe to reuse once nothing can still write to it for its previous owner. With every state write on the runner's main stream, CUDA runs step N+1 only after step N. Our fence exists for writes on other streams, which a model must register.</p>
+    </div>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 760 372" width="760" role="img" aria-label="One stream orders state writes; a side stream needs a fence" font-size="12.5">
+          <defs><marker id="fence-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
+          <text x="24" y="30" font-size="15" font-weight="600" fill="var(--ink)">One stream orders state writes; a side stream needs a fence</text>
+          <text x="24" y="70" font-size="13" font-weight="600" fill="var(--state)">One stream: ordering is enough (PR 6's claim)</text>
+          <g stroke="var(--rule)"><line x1="160" x2="736" y1="104" y2="104"/><line x1="160" x2="736" y1="148" y2="148"/><line x1="160" x2="736" y1="264" y2="264"/><line x1="160" x2="736" y1="308" y2="308"/></g>
+          <g fill="var(--muted)"><text x="24" y="108">Host scheduler</text><text x="24" y="152">GPU main stream</text><text x="24" y="268">GPU main stream</text><text x="24" y="312">Side stream</text></g>
+          <g fill="var(--surface)" stroke="var(--rule)" stroke-width="1.25">
+            <rect x="168" y="132" width="220" height="32" rx="8"/><rect x="452" y="132" width="260" height="32" rx="8"/>
+            <rect x="168" y="248" width="180" height="32" rx="8"/><rect x="488" y="248" width="224" height="32" rx="8"/>
+          </g>
+          <rect x="260" y="292" width="300" height="32" rx="8" fill="var(--state-soft)" stroke="var(--state)" stroke-width="2"/>
+          <circle cx="420" cy="104" r="6" fill="var(--accent)"/>
+          <path d="M388 148H448" fill="none" stroke="var(--muted)" stroke-width="1.25" stroke-dasharray="4 4" marker-end="url(#fence-arrow)"/>
+          <g text-anchor="middle" fill="var(--ink)">
+            <text x="278" y="152">Step N: A writes block 5</text><text x="582" y="152">Step N+1: B writes block 5</text>
+            <text x="258" y="268">Step N: A</text><text x="600" y="268">Step N+1: B writes slot 5</text>
+            <text x="410" y="312">A's late copy into slot 5</text>
+            <text x="420" y="90" font-size="11.5">A finishes; block 5 freed</text>
+          </g>
+          <text x="420" y="186" text-anchor="middle" font-size="11.5" fill="var(--muted)">B's kernels queue behind A's</text>
+          <text x="24" y="228" font-size="13" font-weight="600" fill="var(--accent)">A side stream: why our fence exists</text>
+          <text x="712" y="350" text-anchor="end" font-size="11.5" fill="var(--ink)">Without a fence, A's copy can land after B's write</text>
+        </svg>
+      </div>
+      <figcaption>We checked the plugin against PR 6's claim. Graph capture runs before any session exists. Segment-graph replay and the stage-in and stage-out copies run on the runner stream. The asynchronous copies read status counters or upload plan buffers, and none writes a pool page. The claim holds for this plugin under synchronous scheduling. PR 6 has no contract that stops another model from writing state on a second stream.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="length">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">8 &middot; Session length</p>
+      <h2>Our request never grows; a PR 6 request grows with every input</h2>
+    </div>
+    <div class="col stack">
+      <p>Our <code>StateScheduler</code> replaces the prompt with each input, and the state page carries the history.
+        PR 6 keeps upstream's session accounting: <code>_update_request_as_session</code> appends each input and every
+        kept output token to the prompt, and drops an update that would exceed <code>max_model_len</code> with a warning
+        (<a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/sched/scheduler.py#L1968-L2011"><code>scheduler.py</code> L1968&ndash;L2011</a> at <code>main</code> <code>07e4d6b957</code>).</p>
+      <ul class="plain">
+        <li>At <code>--max-model-len 77000</code>, with about one token plus the label tokens per 320 ms chunk, the token limit allows hours of audio.</li>
+        <li>Host memory and per-turn work bind first: the scheduler keeps every audio chunk, about 225 MiB per session-hour, and each turn re-sends the whole history (B3).</li>
+        <li>The bounded-history commit <a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a> trims consumed history, so a PR 6 request stays the same size, as ours does. At LibriSpeech lengths (at most 30.04 s) the round could not show the growth it removes.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="code">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">9 &middot; Model code</p>
+      <h2>What the model writes</h2>
+      <p class="muted">Both snippets are abridged from the stub model <code>my_persistent_state.py</code> in the test plugin.</p>
+    </div>
+    <div class="stack-lg">
+      <div class="pair">
+        <div>
+          <h3>Our state pool: declare a page, bind rows each step</h3>
+<pre><code><span class="c"># model class</span>
+supports_persistent_state = True
+spec = PersistentStateSpec(
+    descriptors=(
+        PersistentStateDescriptor(
+            "count", (1,), torch.int64, 0, 8, torch.zeros),
+        ...),
+    page_size_bytes=page_bytes)
+self.state = PersistentStateLayerBase(spec, ...)
+
+<span class="c"># ModelState.prepare_inputs, every step</span>
+rows = self.state_slots.bind_rows(
+    STATE_LAYER, request_ids, handles)
+count_pool = rows.component_pools["count"]
+slot_indices = rows.slot_indices_cpu</code></pre>
+        </div>
+        <div>
+          <h3>PR 6: a Mamba layer that reads its metadata</h3>
+<pre><code><span class="c"># MambaBase layer</span>
+mamba_type = MambaAttentionBackendEnum.SHORT_CONV
+def get_kv_cache_config(self, vllm_config):
+    spec = MambaSpec(
+        shapes=((1,),), dtypes=(torch.int64,),
+        block_size=vllm_config.model_config.max_model_len,
+        mamba_type=self.mamba_type)
+    return MambaManager.layer_config(
+        spec, recomputable=False)
+
+<span class="c"># forward</span>
+md = get_forward_context().attn_metadata[self.prefix]
+slots = md.state_indices_tensor_p[:md.num_prefills]
+totals[slots] = totals[slots] * md.has_initial_states_p + ...</code></pre>
+        </div>
+      </div>
+      <p class="col">Under our design, the pool runs each component's initializer when a slot gets a new generation.
+        Under PR 6, <code>MambaManager</code> does not zero new blocks, so the model applies
+        <code>has_initial_states_p</code> itself; the flag is false when the request has no computed tokens. That flag
+        is not enough for the plugin, whose first step does not write every state, so the port also initializes each
+        new page (B7).</p>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">10 &middot; Side by side</p>
+      <h2>Each concern, with what the port found</h2>
+      <p class="muted">B numbers refer to the core gaps; G numbers to the A40 checks.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Concern</th><th>Our state pool (#67374)</th><th>PR 6 state layer</th><th>Finding</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Pool size</td><td>Exactly <code>max_num_seqs + 1</code> pages, or the override; startup fails and reports the largest <code>max_num_seqs</code> that fits.</td><td>Sized from the memory budget like any KV cache; startup fails unless <code>(num_blocks &minus; 1) // blocks_per_request</code> is at least the active-request limit.</td><td>6,439 blocks of 6.02 MiB on an A40, against 65 pages (G4). The larger pool exposes B2.</td></tr>
+          <tr><td class="name">Beyond capacity</td><td>Requests wait in the queue; #67375 adds stream admission with deadlines.</td><td>Requests wait in the queue.</td><td>No timeout, so <code>max_num_active_reqs</code> idle clients block new sessions; #67375 does not rebase (B4).</td></tr>
+          <tr><td class="name">Slot identity</td><td>Handle (epoch, slot, generation); stale handles are rejected.</td><td>Block id from the metadata builder; no generation.</td><td>Equivalent: the block id is stable for a request's life, and the plugin draws its own generation for each fresh row.</td></tr>
+          <tr><td class="name">Fresh state</td><td>Initializers run on each new generation.</td><td>The model applies <code>has_initial_states_p</code>; blocks are not zeroed.</td><td>The flag matches the plugin's own test; pages keep stale bytes, so the plugin initializes them (B7).</td></tr>
+          <tr><td class="name">Next input</td><td>Replaces the prompt; the request sets no length limit.</td><td>Extends the prompt; dropped past <code>max_model_len</code>.</td><td>About 225 MiB of retained audio per session-hour and growing per-turn work (B3); the trim passes its tests (G6).</td></tr>
+          <tr><td class="name">Release</td><td>Fence: an event on the main stream after joining registered streams; the host waits, then frees.</td><td>Freed at finish; relies on one-stream ordering.</td><td>Holds for this plugin under synchronous scheduling; not a core contract.</td></tr>
+          <tr><td class="name">Preemption</td><td>Finishes the request with an error; unreachable by sizing.</td><td>Raises <code>RuntimeError</code> in the scheduler (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1920-L1923">L1920&ndash;L1923</a>); unreachable by the startup check.</td><td>Unreachable in the plugin's layout; a layout that mixes this group with attention groups appears able to reach it. A failed row also ends the engine (B1).</td></tr>
+          <tr><td class="name">Cache clear</td><td>Refused with a message while a slot is bound or parked; drains retiring slots.</td><td><code>reset_prefix_cache</code> never resets running requests and returns <code>False</code>.</td><td>No finding.</td></tr>
+          <tr><td class="name">Async scheduling</td><td>Refused: the step after end-of-stream could advance state on the stop token.</td><td>Allowed.</td><td>The hazard remains: a stop token before <code>max_tokens</code> is written into state (G5).</td></tr>
+          <tr><td class="name">Runner CUDA graphs</td><td>Refused; the model captures its own graphs through #67583.</td><td>Allowed; the stub test runs with and without graphs.</td><td>They cannot run with the plugin's own graphs. The port turns core's graphs off and captures its encoder and decoder graphs through the ported hooks.</td></tr>
+          <tr><td class="name">Stop rule</td><td>Any stop other than end-of-stream ends the stream.</td><td><code>ends_stream</code> deleted; a length stop parks.</td><td>The next input continues from mid-turn state (B6).</td></tr>
+          <tr><td class="name">PRs above it</td><td>#67375 (admission) and #67583 (model hooks, graph capture) stack on #67374.</td><td>Built on #67374's branch.</td><td>#67375 does not rebase; #67583's hooks do, without its state-pool parts (B4, B5).</td></tr>
+          <tr><td class="name">Other options</td><td>Refuses TP, PP, DP, DCP or PCP above 1, speculative decoding, prefix caching, KV transfer, DBO, sleep mode and HiSparse.</td><td>No refusals specific to state.</td><td>Not tested.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="sources">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">11 &middot; Sources</p>
+      <h2>Sources</h2>
+    </div>
+    <ul class="plain col">
+      <li><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code> (commits <code>253aa03d1d</code> and <code>4582db799d</code>), based on #67374 at <code>2e7dfe972b</code>. Its description gives the line counts.</li>
+      <li>Our reply on PR 6 with the A40 result: <a href="https://github.com/pdtgct/vllm/pull/6#issuecomment-7039667149">comment 7039667149</a>.</li>
+      <li>Our design: <a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">vllm#67375</a> and <a href="https://github.com/vllm-project/vllm/pull/67583">vllm#67583</a>, and RFC 1, <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a>.</li>
+      <li>Upstream behaviour at vLLM <code>main</code> <code>07e4d6b957</code>: <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/sched/scheduler.py#L1968-L2011"><code>scheduler.py</code> L1968&ndash;L2011</a> (session updates), <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/single_type_kv_cache_manager.py#L1934-L1980"><code>single_type_kv_cache_manager.py</code> L1934&ndash;L1980</a> (<code>MambaManager</code>), <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/attention/backends/mamba_attn.py#L514"><code>mamba_attn.py</code> L514</a> (<code>has_initial_states_p</code>).</li>
+      <li>Plugin: <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">pdtgct/vllm-nemotron-asr-streaming-plugin</a>, <code>main</code> at <code>acdb5b1</code>; the port is on <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a> at <code>57878f2447</code>.</li>
+      <li>Core builds on <code>pdtgct/vllm</code>, pushed and not merged: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a> at <code>92c0e64b68</code> and <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-bounded-history-20261120"><code>poc/pr6-bounded-history-20261120</code></a> at <code>566ef9259f</code>.</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Source facts read at the commits named above; A40 round run 2026-11-20.</p>
+    <p><a href="../">Persistent-state reviewer guide</a> &middot; <a href="../../">All reviewer guides</a> &middot; source: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
+  </div>
+</footer>
+</body>
+</html>
