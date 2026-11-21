@@ -22,16 +22,16 @@ Last updated 2026-11-21. Status and head commits come from GitHub on that date; 
 
 | PR | Title | RFC | Head | State | Next action |
 | --- | --- | --- | --- | --- | --- |
-| [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2e7dfe972b` | ready, conflicts with `main` | Rebase |
-| [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `11ed283413` | ready, conflicts with `main` | Rebase (stacked on #67374) |
-| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `7c91666618` | ready, conflicts with `main` | Rebase; triage three bot findings |
+| [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2041ef2db3` | ready | Review |
+| [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `775c519193` | ready | Review (stacked on #67374); fix the three bot findings on #67583, all in this PR's code (logprobs of later inputs, rejection text, ROCm stub-model test) |
+| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `0ff6546638` | ready | Review (stacked on #67375) |
 | [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `df75acd235` | ready | Review |
 | [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `ad849dc16b` | ready | Review (stacked on #65546) |
 | [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `b7ec4c2660` | ready, review required | Review |
 | [vllm#67144](https://github.com/vllm-project/vllm/pull/67144) | [Bugfix][Frontend] Fail speech-to-text requests that finish with error or abort | none | `3e4ab32f04` | ready, review required | Review |
 | [vllm#67151](https://github.com/vllm-project/vllm/pull/67151) | [Frontend] Pass use_beam_search and max_completion_tokens to speech-to-text models | none | `dbae7c72cf` | ready, review required | Review |
 | [vllm#65549](https://github.com/vllm-project/vllm/pull/65549) | [Core][MRv2] Build ModelState through an overridable runner method | RFC 3 | `b0469870db` | draft | Hold for RFC 3 |
-| [vllm-omni#9849](https://github.com/vllm-project/vllm-omni/pull/9849) | [Core] Use vLLM's model-state hook in the MRv2 runner | RFC 3 | `236bc31338` | draft, conflicts with `main` | Hold for RFC 3; rebase |
+| [vllm-omni#9849](https://github.com/vllm-project/vllm-omni/pull/9849) | [Core] Use vLLM's model-state hook in the MRv2 runner | RFC 3 | `5c6d3d0ba5` | draft | Hold for RFC 3 |
 
 ## Pull requests to be opened
 
