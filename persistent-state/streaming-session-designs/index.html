@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Streaming-session designs</title>
+<meta name="description" content="Four designs for long-lived streaming sessions with state that tokens cannot rebuild, compared side by side: the vllm#67374 state pool, the pdtgct/vllm#6 state layer, resident sessions in vllm#68539 and bounded sessions in vllm#53879, with a combined design and test results.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: the persistent-state guide's tokens and reading column; tables widen to 64rem, four-design tables scroll from 60rem. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #161a21;
+  --muted: #586170;
+  --rule: #d9dde4;
+  --accent: #0d6b66;      /* our state pool, links */
+  --accent-soft: #dcefed;
+  --state: #b0640c;       /* PR 6 changes and open gaps: amber */
+  --state-soft: #f6e7d3;
+  --kv: #3552c8;
+  --kv-soft: #e1e7fb;
+  --ok: #2c7a3f;
+  --ok-soft: #dff0e3;
+  --warn: #a15c00;
+  --code-bg: #eef0f3;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+    --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+    --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+    --code-bg: #1d222b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+  --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+  --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+  --code-bg: #1d222b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--f-body);
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.wrap {
+  max-width: 64rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.col { max-width: 44rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code, .mono { font-family: var(--f-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto; font: 0.82rem/1.5 var(--f-mono); }
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c { color: var(--muted); }
+h1, h2, h3 { font-family: var(--f-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(1.45rem, 3vw, 1.9rem); font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1.4 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+.stack-lg { display: flex; flex-direction: column; gap: 1.6rem; }
+ul.plain { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.4rem; }
+
+header.top { border-bottom: 1px solid var(--rule); background: var(--surface); }
+header.top .wrap { padding-block: 2.6rem 2.2rem; display: flex; flex-direction: column; gap: 1.1rem; }
+.lede { font-size: 1.15rem; max-width: 44rem; }
+.ask { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; margin-top: 0.4rem; }
+.ask div { border-top: 3px solid var(--accent); padding-top: 0.55rem; min-width: 0; }
+.ask div.amber { border-top-color: var(--state); }
+.ask b { display: block; font-family: var(--f-display); font-size: 1.05rem; }
+.ask span { color: var(--muted); font-size: 0.92rem; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.9rem; padding-top: 0.4rem; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+section { padding-block: 3rem 0.5rem; }
+section > .wrap > .head { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.3rem; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 0.7rem; max-width: 52rem; }
+.scroll { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+svg text { font-family: var(--f-body); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.id { font: 500 0.85rem var(--f-mono); white-space: nowrap; }
+td.name { font-weight: 600; }
+.table-box { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.table-box table { min-width: 44rem; }
+.table-box.wide table { min-width: 60rem; }
+
+.tag { display: inline-block; font: 500 0.72rem/1.5 var(--f-mono); padding: 0 0.45em; border-radius: 3px; white-space: nowrap; }
+.tag.open { background: var(--state-soft); color: var(--state); }
+.tag.fix { background: var(--accent-soft); color: var(--accent); }
+.tag.pass { background: var(--ok-soft); color: var(--ok); }
+.tag.part { background: var(--kv-soft); color: var(--kv); }
+.tag.none { background: var(--code-bg); color: var(--muted); }
+.tag.fail { background: var(--state-soft); color: var(--state); font-weight: 600; }
+
+.cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.cmp > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; min-width: 0; }
+.cmp .ours { border-top: 4px solid var(--accent); }
+.cmp .pr6 { border-top: 4px solid var(--state); }
+.cmp h3 { font-size: 1.05rem; margin-bottom: 0.5rem; }
+.cmp ul { margin: 0; padding-left: 1.1rem; font-size: 0.93rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+.note { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--ok); border-radius: 6px; padding: 0.9rem 1.1rem; font-size: 0.94rem; }
+
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.pair > div { min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+
+footer { border-top: 1px solid var(--rule); margin-top: 3.5rem; background: var(--surface); }
+footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.4rem; }
+
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">vLLM persistent state &middot; design comparison &middot; 2026-11-20</p>
+    <h1>Streaming-session designs for state that tokens cannot rebuild</h1>
+    <p class="lede">Four designs for long-lived streaming sessions work at different layers. Two decide where
+      per-session state lives; two change the streaming-session lifecycle of a request. PR 6's state layer is the
+      preferred starting point, and a combined design takes its missing session lifecycle rules from the other three.</p>
+    <p class="col">The comparison covers the #67374 state pool, the PR 6 state layer, resident sessions in
+      <a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a> and bounded sessions in
+      <a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>. It changed no code; the P3 proof of
+      concept (PoC) that followed reproduces and fixes one gap, B2.</p>
+    <div class="ask">
+      <div><b>Smallest core change</b><span>PR 6 changes +34 / &minus;4 lines under <code>vllm/</code> and does not refuse async scheduling or CUDA graphs by design.</span></div>
+      <div class="amber"><b>Lifecycle rules missing</b><span>PR 6 has no session lifecycle rules. S1 to S7 take them from the state pool, resident sessions and bounded sessions.</span></div>
+      <div><b>B2 is upstream</b><span>Worker request row over-admission reproduces on vLLM <code>main</code> <code>07e4d6b957</code>, independent of state design.</span></div>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#answer">Answer</a>
+      <a href="#inputs">Inputs</a>
+      <a href="#layers">Layers</a>
+      <a href="#compare">Side by side</a>
+      <a href="#findings">Findings per design</a>
+      <a href="#combined">Combined design</a>
+      <a href="#coverage">Gap coverage and trade-offs</a>
+      <a href="#tests">What the tests showed</a>
+      <a href="#checks">Candidate checks</a>
+    </nav>
+    <p class="muted" style="font-size:0.9rem">Part of the <a href="../">persistent-state reviewer guide</a>. Gap IDs B1 to B7 and check IDs G1 to G7 are those of <a href="../state-pool-vs-state-layer/">State pool vs state layer</a>.</p>
+  </div>
+</header>
+
+<main>
+
+<section id="answer">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">1 &middot; Answer</p>
+      <h2>The four designs work at different layers</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <ul class="plain">
+          <li>Where per-session state lives. The state pool keeps it in a separate pool. The state layer keeps it in a Mamba KV group with <code>recomputable=False</code>.</li>
+          <li>The streaming-session lifecycle of a request. Resident sessions skip the per-chunk reinstall. Bounded sessions evict attention KV ranges and re-prefill.</li>
+        </ul>
+        <p>Neither upstream item supplies storage, preemption protection or a recovery contract for state that tokens
+          cannot rebuild, so neither replaces a state layer. Their lifecycle changes can still serve such state; the
+          combined design below uses parts of both.</p>
+        <p>PR 6's state layer is the preferred architectural starting point. It is the smallest core change
+          (+34 / &minus;4 under <code>vllm/</code>), and it does not refuse async scheduling or CUDA graphs by design.</p>
+        <p>The evidence for it is narrow. One A40 round of an augmented PoC build gave the same transcripts. That build
+          carried the #67583 model hooks, refused async scheduling in the plugin and turned off core's outer CUDA graphs.
+          The round did not measure long sessions, worker request row exhaustion or the plugin under async scheduling.</p>
+        <p>PR 6 lacks session lifecycle rules. The combined design takes them from the other three designs:</p>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Source</th><th>Rules taken</th></tr></thead>
+          <tbody>
+            <tr><td class="name">State pool</td><td>Admission, idle reclaim, recoverable per-request failure</td></tr>
+            <tr><td class="name">Resident sessions</td><td>In-place resume</td></tr>
+            <tr><td class="name">Bounded sessions</td><td>Host-history compaction, a logical position offset, the per-session prefix-cache rule, bounded output-processor state</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="col">Each rule needs a stated contract before it is general. The sections below name each contract, and
+        the proposed gap coverage is not yet demonstrated. The #67374 state scheduler and page handles are not needed.
+        A release-ordering rule is still needed (<a href="#s7">S7</a>).</p>
+    </div>
+  </div>
+</section>
+
+<section id="inputs">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">2 &middot; Inputs</p>
+      <h2>Inputs, read at the stated heads</h2>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Design</th><th>Source</th><th>Head</th></tr></thead>
+        <tbody>
+          <tr><td class="name">State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, with admission <a href="https://github.com/vllm-project/vllm/pull/67375">vllm#67375</a> at <code>11ed283413</code> and model hooks <a href="https://github.com/vllm-project/vllm/pull/67583">vllm#67583</a> at <code>7c91666618</code></td><td class="id">2e7dfe972b</td></tr>
+          <tr><td class="name">State layer</td><td>Lucas Wilkinson's draft <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a> (PR 6), with the PoC fixes</td><td class="id">4582db799d</td></tr>
+          <tr><td class="name">Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a> (andylolu2), base <code>07e4d6b957</code></td><td class="id">665cc58c15</td></tr>
+          <tr><td class="name">Bounded sessions</td><td>RFC <a href="https://github.com/vllm-project/vllm/issues/51948">vllm#51948</a> and its combined implementation <a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a> (nvbfalk), base <code>bc93224f7c</code>. #53879 folds in <a href="https://github.com/vllm-project/vllm/pull/53871">vllm#53871</a> and <a href="https://github.com/vllm-project/vllm/pull/53876">vllm#53876</a>.</td><td class="id">015eb5e212</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col stack" style="margin-top:1.3rem">
+      <p>Related open PRs, cited only where they bear on a choice:
+        <a href="https://github.com/vllm-project/vllm/pull/58334">vllm#58334</a> strips covered multimodal data per realtime step;
+        <a href="https://github.com/vllm-project/vllm/pull/45833">vllm#45833</a> re-anchors a live session's RoPE positions;
+        <a href="https://github.com/vllm-project/vllm/pull/43374">vllm#43374</a> evicts session KV with attention sinks.</p>
+      <p>File and line references are at the head named for each design. An independent model review checked this
+        comparison twice and the P3 result once.</p>
+    </div>
+  </div>
+</section>
+
+<section id="layers">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">3 &middot; Layers</p>
+      <h2>What each design does at each layer</h2>
+    </div>
+    <div class="table-box wide">
+      <table>
+        <thead><tr><th>Layer</th><th>State pool</th><th>State layer (+ PoC)</th><th>Resident sessions</th><th>Bounded sessions</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Where state lives</td><td><code>PersistentStateManager</code> pool, <code>max_num_seqs + 1</code> pages</td><td><code>MambaManager</code> page in a <code>recomputable=False</code> group; budget-fit pool with a startup capacity check</td><td>Attention KV (unchanged)</td><td>Attention KV (unchanged)</td></tr>
+          <tr><td class="name">Resume path</td><td><code>StateScheduler</code> replaces the prompt</td><td>Upstream fold: WAITING, then reinstall of the worker request row with existing blocks</td><td>In place (parked or running to RUNNING) when the output budget was reached and the update has no prompt tokens; otherwise the upstream fold</td><td>Upstream fold plus retention and eviction</td></tr>
+          <tr><td class="name">History bound</td><td>Prompt replaced per input</td><td>None upstream; the PoC trim <code>566ef9259f</code> drops consumed tokens</td><td>None: transfer is bounded, the scheduler-side <code>Request</code> grows</td><td>Range eviction and compaction; consolidation re-prefills the retained window</td></tr>
+          <tr><td class="name">Positions</td><td>Not used by the plugin</td><td>The trim restarts positions at 1 (safe only for a model that ignores <code>positions</code>)</td><td>Absolute, up to <code>max_model_len</code></td><td>Logical <code>position_offset</code> per request, gaps kept, reset at consolidation</td></tr>
+          <tr><td class="name">Admission</td><td>Ordinary scheduler admission plus #67375 stream admission</td><td>Ordinary admission, parked sessions counted</td><td>The same as PR 6</td><td>The same, plus validation at the first input</td></tr>
+          <tr><td class="name">Idle reclaim</td><td>Three #67375 deadlines</td><td>None (B4)</td><td>None</td><td>HTTP adapter only: 900 s idle reaper, 120 s per-frame timeout</td></tr>
+          <tr><td class="name">Per-request failure</td><td>The model reports failed request IDs (<code>StateSlotBindings.fail_requests</code>)</td><td>None; a model raise ends the engine (B1)</td><td>None new</td><td>Validation and fold failures end one session with <code>FINISHED_ERROR</code></td></tr>
+          <tr><td class="name">Async scheduling</td><td>Refused</td><td>The default; EOS is written into state (G5)</td><td>Supported; the fast path never has a step in flight</td><td>Refused</td></tr>
+          <tr><td class="name">CUDA graphs</td><td>Runner graphs refused; model hooks in #67583</td><td>Available</td><td>An in-place session stays a uniform 1-token decode</td><td>Refused (eager only)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">4 &middot; Side by side</p>
+      <h2>Side by side</h2>
+    </div>
+    <div class="table-box wide">
+      <table>
+        <thead><tr><th></th><th>State pool</th><th>State layer (+ PoC)</th><th>Resident sessions #68539</th><th>Bounded sessions #53879</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Problem</td><td>Per-session state that tokens cannot rebuild</td><td>The same, as a Mamba group</td><td>Per-chunk CPU work that grows with the session, and the frontend round trip, for Voxtral</td><td>Hours-long video sessions: KV and positions grow without bound</td></tr>
+          <tr><td class="name">Model contract</td><td>Declares a <code>PersistentStateSpec</code></td><td>Declares one <code>MambaBase</code> layer</td><td>The frontend stops token feedback when the model sets <code>realtime_keep_last_output_token</code> (<code>interfaces.py:1346</code>; Voxtral only); the scheduler predicate does not read the flag</td><td>Causal decoder, independently encoded updates, gap-tolerant 1D or mRoPE positions, text or replayable images</td></tr>
+          <tr><td class="name">Refuses</td><td>Async scheduling, runner CUDA graphs, prefix caching, TP/PP/DP above 1, speculative decoding, others</td><td>Nothing state-specific; Mamba prefix caching keeps its own mode limits</td><td>In place only: M-RoPE, mm-prefix-LM, PP, speculative decoding, changed sampling params (<code>scheduler.py:2061-2077</code>)</td><td>Non-eager, async, speculative decoding, PP/DP/CP above 1, KV and encoder connectors, hybrid, sliding window (<code>streaming/session.py:54-84</code>); per request: n&ne;1, non-DELTA output, stop strings, prompt logprobs or embeds, any layout but one plain full-attention group (<code>94-145</code>); TP allowed</td></tr>
+          <tr><td class="name">Per-turn transfer</td><td>O(1)</td><td>O(session); O(retained) with the trim</td><td>O(1) in place (<code>CachedRequestData.new_mm_features</code>)</td><td>O(retained window) per input (worker re-add)</td></tr>
+          <tr><td class="name">Host memory per session</td><td>O(1)</td><td>O(session) in the scheduler and the output processor; the trim bounds the scheduler <code>Request</code> only</td><td>O(session): <code>_all_token_ids</code>, output tokens, <code>mm_features</code>; EngineCore keeps each original payload for replay (<code>gpu/mm/encoder_cache.py:20-35</code>); <code>block_hashes</code> grow when hashing is on</td><td>Retained tokens and turn output bounded; retained pixel tensors not counted; direct SDK updates queue without a bound (<code>scheduler.py:3185-3209</code>)</td></tr>
+          <tr><td class="name">GPU memory per session</td><td>One page</td><td>One page</td><td>KV grows to <code>max_model_len</code></td><td>At most <code>max_session_tokens + max_tokens</code> of KV</td></tr>
+          <tr><td class="name">Session length limit</td><td>None from tokens</td><td><code>max_model_len</code> upstream; none with the trim</td><td><code>max_model_len</code></td><td>No cumulative limit for supported turns that fit the budgets; an oversized turn fails</td></tr>
+          <tr><td class="name">Source size (additions / deletions)</td><td><code>vllm/</code>: +1,493 / &minus;28 (#67374 against its parent)</td><td><code>vllm/</code>: +34 / &minus;4 against <code>07e4d6b957</code>; the trim adds +41 / &minus;1 against <code>92c0e64b68</code></td><td><code>vllm/</code>: +138 / &minus;48 against <code>07e4d6b957</code>, excluding unrelated merged NIXL changes</td><td>Against <code>bc93224f7c</code>: +330 / &minus;19 core and worker, +1,053 / &minus;0 new <code>vllm/v1/streaming</code> package, +842 / &minus;0 frontend</td></tr>
+          <tr><td class="name">Evidence</td><td>A40 rounds, full plugin suites</td><td>One A40 round of the augmented PoC build: 200 transcripts equal; the G5 stub test</td><td>PR body: one H100, one metric. 24 / 28 sessions (async / sync) against 16 for #58334. The 160 / 152 headline needs three changes outside the PR</td><td>RFC: one TTFT table (32 against 57 ms per frame; total 0.315 against 0.322 s), 24 h runs described without data. PR body reports 66 CPU streaming tests, 17 lifecycle and output tests, 6 cache tests, and GPU runs of 64 text turns and two 64-frame image sessions on Qwen3-0.6B and Qwen3-VL-8B; Cosmos3 Reasoner outstanding. None reproduced here</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="findings">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">5 &middot; Findings per design</p>
+      <h2>Findings per design</h2>
+    </div>
+    <div class="stack-lg col">
+      <div class="stack">
+        <h3>Resident sessions (#68539)</h3>
+        <ul class="plain">
+          <li>Fast-path condition. <code>_can_resume_in_place</code> requires <code>num_output_tokens &gt;= max_tokens</code> (the output budget was reached), an update with no prompt tokens, unchanged sampling params and none of the excluded features (<code>scheduler.py:2061-2077</code>). An EOS exactly at the budget qualifies; an EOS before it does not. Voxtral meets the condition with <code>realtime_max_tokens = 1</code> at temperature 0. The plugin would qualify only if its turns used up their token budget and its updates carried no prompt tokens. Neither holds today.</li>
+          <li>What it bounds. It bounds what the scheduler sends to the workers per step, not the session. The scheduler-side <code>Request</code> keeps appending tokens, output tokens and <code>mm_features</code>. EngineCore keeps each original payload for replay, while the worker keeps metadata with consumed payloads set to <code>None</code>. B3 is unchanged.</li>
+          <li>G5. Not fixed. An early stop with a step in flight takes the fold path. With a token-less next update, the fold keeps the last sample, the stop token included, as a prompt token. For a Mamba group, that applies the stop token a second time, on top of G5's stale write.</li>
+          <li>Two resume paths with different sampling state. In place, the output history accumulates and <code>max_tokens</code> is incremented. On the fold, the history folds into the prompt and resets. Penalties and output-count logits processors therefore depend on which path ran. The review on the PR marks this P1.</li>
+          <li>Other review findings. P1: with token feedback gone, pending features per session have no limit; <code>streaming_queue</code> is an unbounded deque. P2: a structural realtime model that lacks the new attribute passes detection and then raises <code>AttributeError</code> in the frontend (<code>connection.py:236-248</code>).</li>
+          <li>Composition with the trim <code>566ef9259f</code>. The two edit the same function, and the in-place branch returns before the trim. The trim cannot run in place without a worker turn-transition operation (<a href="#s2">S2</a>). The two fixes are complementary, and neither subsumes the other.</li>
+          <li>What it avoids. The in-place path avoids the B2 transition (resumed but skipped while holding a worker request row) for eligible resumes; the fold path keeps it. B1, B4 and the abort concern raised in review stay open.</li>
+        </ul>
+      </div>
+      <div class="stack">
+        <h3>Bounded sessions (#51948, #53879)</h3>
+        <ul class="plain">
+          <li>Attention KV only. Range eviction (<code>evict_token_range_for_request</code>, <code>kv_cache_manager.py:705-735</code>) and consolidation both assume token-indexed KV that retained inputs can rebuild. A <code>recomputable=False</code> page has already absorbed the evicted tokens, and consolidation replays from tokens and pixels. That is the reason PR 6 raises on preemption.</li>
+          <li>Pieces that carry over, each with its own constraints:
+            <ol style="margin:0.3rem 0 0;padding-left:1.2rem;display:flex;flex-direction:column;gap:0.3rem">
+              <li>Host-history compaction (<code>_compact_range</code>, <code>streaming/eviction.py:126-191</code>) with per-input encoder-cache release (<code>EncoderCacheManager.remove_input_ids</code>, <code>encoder_cache_manager.py:313-325</code>). It is a general form of the PoC trim.</li>
+              <li>A logical position offset. It is sent in <code>NewRequestData</code> and applied on the worker in a separate buffer (<code>sched/output.py:56-93</code>; <code>model_states/default.py:259-285</code>). It keeps model positions apart from compact storage positions. The mRoPE path keeps per-axis positions and replays eviction ranges, not a scalar offset (<code>default.py:108-131</code>).</li>
+              <li>The prefix-cache rule. A bounded request neither looks up nor publishes prefix-cache blocks (<code>request.py:253-268</code>, <code>397-405</code>). Retained KV carries the effect of discarded context, so hashing only the retained tokens would misidentify it.</li>
+              <li><code>BoundedRequestState</code> (<code>streaming/output.py</code>). It stops the output processor from accumulating each turn's output state.</li>
+            </ol>
+          </li>
+          <li>A gap in the PoC. The output processor appends every update's prompt IDs (<code>output_processor.py:266-267</code> at PR 6's head), and the trim leaves that unchanged. B3 is only half fixed.</li>
+          <li>Lifecycle. Validation and fold failures end one session with <code>FINISHED_ERROR</code>; <code>eviction.py:108-113</code> still has an invariant <code>RuntimeError</code>. Preemption is a path of its own: it frees caches, resets progress and positions, and replays the surviving inputs (<code>scheduler.py:1907-1939</code>). It does not rebuild the transcript, as consolidation does (<code>streaming/session.py:316-338</code>), and no test covers it. A length stop parks the session, and the frontend replays the last token, which is precedent for PR 6's B6 behaviour. The HTTP adapter allows one active session per Python API server and requires one API-server process, which hides B2.</li>
+          <li>Why async scheduling and graphs are refused. Compaction runs in <code>update_from_output</code> and needs no step in flight. Evicted blocks are freed outside the deferred-free path. The 1D offset buffer would be ignored on FULL graph replay; this is inferred, not checked.</li>
+          <li>Hybrid models past the position horizon. The RFC thread establishes only that a uniform re-rotation (#45833) conflicts with a pinned attention sink. With a sink, the RFC compacts and re-prefills, which a state group cannot do.</li>
+        </ul>
+      </div>
+      <div class="stack">
+        <h3>State pool and state layer</h3>
+        <p><a href="../state-pool-vs-state-layer/">State pool vs state layer</a> compares these two. Two points matter here:</p>
+        <ul class="plain">
+          <li>PR 6's single flag, <code>recomputable</code>, says only whether inputs can rebuild a group's cache. The scheduler uses it for preemption and the trim uses it for history. It says nothing about whether the model reads positions or whether sampling needs history.</li>
+          <li>The state pool's prompt replacement gives O(1) history without a position contract, because the plugin ignores <code>positions</code>.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="combined">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">6 &middot; Combined design (sketch)</p>
+      <h2>A streaming session is a long-lived request with declared contracts</h2>
+      <p class="muted">At each input, the scheduler runs a retention policy over the request's KV groups. Each group and the model declare contracts, and the scheduler derives the session's rules from them. The sketch names the contracts it needs; it does not establish them.</p>
+    </div>
+    <div class="stack-lg">
+      <div class="stack">
+        <h3 class="col" id="s1">S1. Explicit contracts instead of one flag</h3>
+        <div class="table-box">
+          <table>
+            <thead><tr><th>Contract</th><th>Declared by</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td class="name">Reconstructible</td><td>Group</td><td>Retained inputs can rebuild the group's cache. This is a new, stronger contract: PR 6's <code>recomputable</code> says only that a request's full inputs can rebuild it (<code>kv_cache_interface.py:176</code>).</td></tr>
+              <tr><td class="name">Physically evictable</td><td>Group</td><td>Whole blocks of a token range can be freed while the request lives.</td></tr>
+              <tr><td class="name">Valid after eviction</td><td>Model</td><td>Continuing after eviction gives acceptable output.</td></tr>
+              <tr><td class="name">Reads positions</td><td>Model</td><td>The forward consumes <code>positions</code> (1D or mRoPE).</td></tr>
+              <tr><td class="name">History-dependent sampling</td><td>Sampling params</td><td>Penalties, logits processors or grammars read past output.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="col stack">
+          <p>Rules the scheduler derives from these contracts:</p>
+          <ul class="plain">
+            <li>Preempt or consolidate only when every group is reconstructible.</li>
+            <li>Compact host history only up to the oldest token that any reconstructible group, the sampler or a connector still needs.</li>
+            <li>Apply a logical position offset only when the model reads positions; otherwise positions need no contract.</li>
+          </ul>
+          <p>Each reconstructible group also defines its replay recipe: the retained inputs or checkpoint that rebuild it,
+            and whether replay reproduces the existing state or establishes a new continuation state. #53879 records that
+            retained KV depends on evicted history (<code>request.py:256</code>), so its consolidation establishes a new
+            continuation state.</p>
+          <p>TP needs a stated state-ownership rule, sharded or replicated (<code>is_kv_cache_tp_replicated</code>,
+            <code>abstract.py:65</code> at PR 6's head); until one exists, TP stays outside the supported scope.</p>
+          <p>Sliding-window groups do not reduce to "the last window of tokens". A surviving KV entry can depend on earlier
+            inputs through earlier layers, so it needs its own reconstruction rule. The same holds for attention interleaved
+            with state that cannot be rebuilt.</p>
+        </div>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s2">S2. In-place resume through a turn-transition operation</h3>
+        <ul class="plain">
+          <li>A session whose worker request row is live resumes in place, as #68539 does.</li>
+          <li>A new worker operation runs the turn transition in order. It covers token storage; the CPU and GPU computed-token counts; the prompt and prefill boundaries, <code>total_len</code> and <code>max_seq_len</code>; output counters and penalty state; sampling params and processors; stale samples and drafts; model-specific state; and multimodal feature offsets and encoder input IDs, which #53879 rebases (<code>streaming/eviction.py:146</code>, <code>194</code>), or else those layouts stay out of in-place compaction.</li>
+          <li>The operation spans three objects: request state (<code>worker/gpu/states.py:37-125</code>), sampler penalty state (<code>penalties.py:35</code>) and model state, which has its own update path. Today a cached update changes only the CPU computed-token count and appends block IDs (<code>model_runner.py:1370-1389</code>).</li>
+          <li>Dropping a token prefix and setting a logical position offset are part of that operation for groups that are not position-indexed storage. For attention groups, a prefix drop also needs block-aligned eviction and block-table replacement, because slot mapping uses local positions (<code>block_table.py:396-427</code>). Unsupported layouts stay on the fold path.</li>
+          <li>Output history is chunk-local on every path, which removes the in-place versus fold divergence (the first P1 finding in the #68539 review).</li>
+        </ul>
+        <p class="muted">Sources: #68539, <code>566ef9259f</code> and #53879's offset.</p>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s3">S3. Bounded host state and cache identity</h3>
+        <ul class="plain">
+          <li>Compaction drops consumed tokens and <code>mm_features</code> with their payloads once nothing that S1 lists still needs them.</li>
+          <li>A compacted session neither looks up nor publishes prefix-cache blocks, as in #53879.</li>
+          <li>KV and encoder connectors stay refused for compacted sessions until a transfer or checkpoint contract exists, as in the PoC trim.</li>
+          <li>The output processor resets per turn (<code>BoundedRequestState</code>).</li>
+          <li>Pending inputs per session are bounded, which answers the second P1 finding in the #68539 review.</li>
+        </ul>
+        <p class="muted">Sources: #53879 and #58334.</p>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s4">S4. Session resource accounting</h3>
+        <ul class="plain">
+          <li>A session holds a worker request row, a state page and its KV blocks from admission to close.</li>
+          <li>The admission check counts held worker request rows, not waiting status, which addresses B2 for both resume paths.</li>
+          <li>Explicit stream admission and three deadlines reclaim idle sessions (never fed, parked idle, draining), which addresses B4.</li>
+        </ul>
+        <p class="muted">Source: #67375's rules, rebuilt on <code>MambaManager</code>.</p>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s5">S5. Recoverable per-request failure</h3>
+        <ul class="plain">
+          <li>The model reports a recoverable failure for identified requests, as <code>StateSlotBindings.fail_requests</code> does in #67374 (<code>state_slots.py:219-227</code> at <code>2e7dfe972b</code>).</li>
+          <li>Core retires those requests safely. The rule must define partial writes and completion identity.</li>
+          <li>A request that would need preemption of a group that is not reconstructible fails with an error instead of raising.</li>
+        </ul>
+        <p>The rule covers B1 for reported failures. It does not recover from arbitrary Python or CUDA exceptions, which
+          stay fatal (<code>engine/core.py:1769-1775</code> at PR 6's head).</p>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s6">S6. Stop tokens under async scheduling (hypothesis)</h3>
+        <p>Contract: a per-row write-enable contract for state. On the GPU, the worker disables state writes for a row
+          whose previous sample was a stop token, so the in-flight step writes nothing to that row's page. Ordinary
+          single-token decode already has the previous sample on the device (<code>input_batch.py:448-459</code>).</p>
+        <p>Neither sentinel does this alone:</p>
+        <ul class="plain">
+          <li><code>NULL_BLOCK_ID</code> (0) skips a state-cache index in the causal-conv decode kernel (<code>causal_conv1d.py:825-835</code>).</li>
+          <li><code>PAD_SLOT_ID</code> (&minus;1) skips a sequence in the prefill launch mapping (<code>utils.py:55-56</code>).</li>
+          <li>Direct indexed writes honor neither: PR 6's stub (<code>my_persistent_state.py:83-102</code>, where &minus;1 selects the last page) and Mamba2's state assignment (<code>mamba_mixer2.py:973-994</code>).</li>
+        </ul>
+        <p>Obstacles:</p>
+        <ul class="plain">
+          <li>A resumed turn's first row must not be disabled because the previous turn ended on EOS.</li>
+          <li>The mask must follow request slots through batch reordering.</li>
+          <li>Speculative decoding saves the last accepted sample, while the scheduler stops at the first stop token (<code>input_batch.py:597-611</code>; <code>scheduler.py:2992-3004</code>).</li>
+          <li>PP delivers samples through events (<code>pp_utils.py:214-245</code>).</li>
+          <li>FULL-graph metadata copies indices into persistent buffers (<code>mamba_attn.py:598-651</code>), so the mask needs graph-stable storage.</li>
+          <li>The plugin takes its page from host <code>NewRequestData.block_ids</code>, not from the builder's device indices.</li>
+        </ul>
+        <p>The write-enable flag must reach the Mamba metadata builder's state indices and their persistent graph buffers
+          (ReplaySSM's included), direct indexed writes in model code, and each plugin's host-side plan.</p>
+        <p>Scope a first version to single-token, non-speculative decode with explicit stop tokens. The fallback is to
+          schedule no step past a possible stop for a group that is not reconstructible, which costs the async overlap
+          for those rows.</p>
+      </div>
+
+      <div class="col stack">
+        <h3 id="s7">S7. Release ordering</h3>
+        <p>A freed page is safe to reuse only when every access by its old owner is ordered before the new owner's first
+          conflicting access, including initialization, copies and connector loads.</p>
+        <ul class="plain">
+          <li>One runner stream orders kernels on that stream.</li>
+          <li>PR 6 already defers freeing blocks when async scheduling or PP overlaps batches and a KV consumer connector could fill a reused page out of order (<code>scheduler.py:212-226</code>, <code>3318-3334</code>).</li>
+          <li>A model that writes state on a second stream adds another case.</li>
+        </ul>
+        <p>Core may skip a fence only where it can establish the ordering. A model's stream declaration is one input to
+          that decision, not the whole rule. The PoC established the ordering only for the plugin under synchronous
+          scheduling.</p>
+        <p class="muted">Source: #67374's fence, generalized.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="coverage">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">7 &middot; Gap coverage and trade-offs</p>
+      <h2>Gap coverage and trade-offs</h2>
+      <p class="muted">The coverage is proposed and not demonstrated, except for B2, which P3 reproduced and fixed in a PoC.</p>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Gap</th><th>Proposed by</th></tr></thead>
+          <tbody>
+            <tr><td class="name">B1 per-request failure</td><td>S5, for failures the model reports</td></tr>
+            <tr><td class="name">B2 worker request rows run out</td><td>S4; reproduced and fixed in a PoC (<a href="#tests">P3</a>)</td></tr>
+            <tr><td class="name">B3 history growth</td><td>S2 and S3, subject to the S1 contracts</td></tr>
+            <tr><td class="name">B4 admission and idle reclaim</td><td>S4</td></tr>
+            <tr><td class="name">B5 model hooks</td><td>#67583 hooks without the pool parts (PoC build B)</td></tr>
+            <tr><td class="name">B6 length stop parks the session</td><td>A decision of its own (below)</td></tr>
+            <tr><td class="name">B7 new pages not zeroed</td><td>Zero on allocation for groups that are not reconstructible, or a documented model duty</td></tr>
+            <tr><td class="name">G5 EOS written under async scheduling</td><td>S6 for its scoped case; otherwise the S6 fallback</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col stack">
+        <h3>Trade-offs to decide</h3>
+        <ul class="plain">
+          <li>S2's turn-transition operation. It is a new runner interface with many fields. Without it, the trim forces the fold path and gives up #68539's O(1) transfer.</li>
+          <li>S1 against PR 6's single flag. S1 has more surface, but it separates preemption, eviction, positions and sampling history. A hybrid model (attention plus state) needs that separation.</li>
+          <li>B6, a length stop. Choose terminal or parked. If parked, also decide what happens to the visible final token, which the fold drops, and whether the model accepts the next input in mid-turn state. Chunk-local sampling history does not settle this.</li>
+          <li>Hybrid sessions past the position horizon. None of the compared implementations provides a verified rule for a hybrid model with a pinned sink. Ending the session at the horizon is the conservative fallback, not a proven necessity.</li>
+          <li>S6 against refusing async scheduling. S6 keeps the overlap but adds a write-enable duty to every state kernel and plugin. Refusing async scheduling is simple and costs throughput not yet measured for this plugin.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tests">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">8 &middot; Tests</p>
+      <h2>What the tests showed</h2>
+      <p class="muted">Results from the PR 6 PoC branches on <code>pdtgct/vllm</code>. PoC branches are never merged.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Test</th><th>What it showed</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td class="name">A40 round of PR 6 (G1 to G7)</td><td>On one A40, build <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a> served the first 200 LibriSpeech test-clean utterances over <code>/v1/realtime</code> and gave the same final transcripts as the #67374 baseline, at a WER of 2.55%. With a constrained pool of 9 pages (8 for sessions plus core's null page), 200 sessions at concurrency 8 also matched. The round did not establish step time; <a href="../state-pool-vs-state-layer/#result">State pool vs state layer</a> gives the detail, and the <a href="https://github.com/pdtgct/vllm/pull/6#issuecomment-7039667149">reply on PR 6</a> reports it.</td><td><span class="tag pass">Same transcripts</span></td></tr>
+          <tr><td class="name">G5 stop token under async scheduling</td><td>A stub test (<a href="https://github.com/pdtgct/vllm/commit/4d6aeba4ba"><code>4d6aeba4ba</code></a>) shows that under async scheduling a stop token sampled before <code>max_tokens</code> is written into Mamba state, and under synchronous scheduling it is not. The resume path rewinds <code>num_computed_tokens</code>, but the GPU has already run the in-flight step, and Mamba state is not indexed by position.</td><td><span class="tag fail">Fail</span></td></tr>
+          <tr><td class="name">B3 history trim</td><td>With commit <a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a>, a stub test that streams 200 two-token inputs at <code>max_model_len=256</code> passes under both schedulers. The output processor still appends every update's prompt IDs, so B3 is half fixed.</td><td><span class="tag part">Half fixed</span></td></tr>
+          <tr><td class="name">P3 B2 worker request row over-admission</td><td>B2 is an upstream bug on vLLM <code>main</code> <code>07e4d6b957</code>, independent of state design. A streaming session that gets its next input while parked, or stops with an input already queued, moves to WAITING but keeps its worker request row until rescheduled. Admission counted only <code>len(running)</code> plus <code>num_waiting_for_streaming_input</code> (<a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/sched/scheduler.py#L1103"><code>scheduler.py</code> L1103</a>), so a step that skips the resumed session admits another request beyond <code>max_num_active_reqs</code>, and the worker's <code>assert len(self.free_indices) &gt; 0</code> fails. Stub tests that drive the real <code>Scheduler</code> reproduce it: on <code>main</code> without the fix, three over-admission tests fail with "No free indices". The fix, local commit <code>c87b748246</code> on branch <code>poc/pr6-admission-rows-20261120</code> (not pushed), tracks resumed sessions that hold a row in <code>resumed_streaming_sessions</code> and covers the fold path only. Open: a regression through a public entry point and a Linux run of the 129 <code>test_scheduler.py</code> cases, both before an upstream fix.</td><td><span class="tag fix">Reproduced, fixed in PoC</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="checks">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">9 &middot; Candidate checks</p>
+      <h2>Candidate checks</h2>
+      <p class="muted">The TLA+ models are bounded. The PoCs run on the PR 6 PoC branch, with stub-model tests on CPU first and one A40 round only if they pass.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>ID</th><th>Check</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="id">M1</td><td>In-place resume against the fold: the turn-transition operation leaves sampling state and logical positions equal for the same inputs, under preemption and early stop.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">M2</td><td>S6 under async scheduling: no state write follows a stop, a resumed row is not disabled, and no write is lost for a row that continues.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">M3</td><td>S4 accounting: with parked, resumed-but-skipped and draining sessions, admission never exceeds worker request rows or pages, and every deadline frees what it holds.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">M4</td><td>S7 ordering: with async scheduling, a connector load and a second stream, no new owner reads or writes a page before the old owner's last access.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">P1</td><td>The S2 turn-transition operation for a state-only group, with a logical position offset replacing the trim's restart.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">P2</td><td>The S6 write-enable contract in the stub and the plugin, extending the G5 test (<code>4d6aeba4ba</code>) to async scheduling. Checks cover mixed prefill and decode batches, resumed rows, graph replay, and canaries on neighbouring pages, including the last physical page.</td><td><span class="tag none">Not started</span></td></tr>
+          <tr><td class="id">P3</td><td>The S4 admission count, with a stub test that reproduces B2 (see <a href="#tests">What the tests showed</a>).</td><td><span class="tag pass">Done</span></td></tr>
+          <tr><td class="id">P4</td><td>S3's output-processor bound and per-session input backlog, with a long-session host-memory test.</td><td><span class="tag none">Not started</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="col" style="margin-top:1.3rem">The choice among the checks that are not started is open.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Source facts read at the heads named above; analysis and P3 PoC 2026-11-20.</p>
+    <p><a href="../state-pool-vs-state-layer/">State pool vs state layer</a> &middot; <a href="../">Persistent-state reviewer guide</a> &middot; <a href="../../">All reviewer guides</a> &middot; source: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
+  </div>
+</footer>
+</body>
+</html>
