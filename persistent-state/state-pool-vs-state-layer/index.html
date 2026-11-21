@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>State Pool vs State Layer</title>
+<title>State pool vs state layer</title>
 <meta name="description" content="How the persistent-state pool in vllm#67374 compares with the Mamba state layer in pdtgct/vllm#6, with the results of porting the Nemotron ASR streaming plugin onto the state layer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -111,6 +111,7 @@ td.name { font-weight: 600; }
 .tag.pass { background: var(--ok-soft); color: var(--ok); }
 .tag.part { background: var(--kv-soft); color: var(--kv); }
 .tag.none { background: var(--code-bg); color: var(--muted); }
+.tag.fail { background: var(--state-soft); color: var(--state); font-weight: 600; }
 
 .cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
 .cmp > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; min-width: 0; }
@@ -136,28 +137,30 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
   <div class="wrap">
     <p class="eyebrow">vLLM persistent state &middot; design comparison &middot; 2026-11-20</p>
     <h1>State pool vs state layer</h1>
-    <p class="lede"><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a> keeps per-session
-      state that tokens cannot rebuild in a state pool with its own scheduler, slot handles and release fence.
-      Lucas Wilkinson's draft, <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, keeps the same
-      state as a Mamba state block that <code>MambaManager</code> allocates, plus one flag,
-      <code>ManagerConfig.recomputable</code>. To test the draft, we ported the
-      <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">Nemotron ASR streaming plugin</a>
-      onto it and ran one round on an A40.</p>
+    <p class="lede">The Nemotron ASR streaming plugin runs on Lucas Wilkinson's draft
+      <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a> and gives the same final transcripts as on
+      <a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>: all 200 LibriSpeech utterances match on
+      one A40. Five gaps in the draft need core changes before the plugin can depend on it.</p>
+    <p class="col">#67374 keeps per-session state that tokens cannot rebuild in a state pool with its own scheduler,
+      page handles and release fence. PR 6 keeps the same state in a Mamba layer that <code>MambaManager</code>
+      allocates, plus one flag, <code>ManagerConfig.recomputable</code>.</p>
     <div class="ask">
-      <div><b>Same transcripts</b><span>All 200 LibriSpeech utterances over <code>/v1/realtime</code> match the baseline, also with the pool cut to 8 state blocks.</span></div>
-      <div class="amber"><b>Five gaps need core changes</b><span>Admission, per-request failure, engine death when worker rows run out, history growth and the model hooks.</span></div>
-      <div><b>Smaller core change</b><span>PR 6 is 34 lines under <code>vllm/</code> against <code>main</code>, and deletes 4,686 lines of #67374.</span></div>
+      <div><b>Same final transcripts</b><span>All 200 utterances over <code>/v1/realtime</code> match #67374, also with only 8 session pages.</span></div>
+      <div class="amber"><b>Five core gaps</b><span>Admission, per-request failure, engine failure when worker request rows run out, history growth and the model hooks.</span></div>
+      <div><b>Smaller core change</b><span>34 lines under <code>vllm/</code> against <code>main</code>, where #67374 adds 1,531 lines of source.</span></div>
     </div>
     <nav class="toc" aria-label="Sections">
       <a href="#summary">Summary</a>
-      <a href="#result">A40 result</a>
-      <a href="#gaps">Core gaps</a>
-      <a href="#plugin">Plugin changes</a>
+      <a href="#terms">Terms</a>
       <a href="#map">Where each piece lives</a>
-      <a href="#lifecycle">Session lifecycle</a>
+      <a href="#lifecycle">One streaming session</a>
       <a href="#fence">Release fence</a>
       <a href="#length">Session length</a>
       <a href="#code">Model code</a>
+      <a href="#result">A40 result</a>
+      <a href="#gaps">Core gaps</a>
+      <a href="#plugin">Plugin changes</a>
+      <a href="#holds">Claims that hold</a>
       <a href="#compare">Side by side</a>
       <a href="#sources">Sources</a>
     </nav>
@@ -173,144 +176,42 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <p class="eyebrow">1 &middot; Summary</p>
       <h2>Two ways to keep state that tokens cannot rebuild</h2>
     </div>
-    <div class="cmp">
-      <div class="ours">
-        <h3>Our state pool (#67374 at <code>2e7dfe972b</code>)</h3>
-        <ul>
-          <li>A separate lifetime policy for state that tokens cannot rebuild.</li>
-          <li><code>PersistentStateSpec</code> declares named components and their initializers.</li>
-          <li><code>StateScheduler</code> and <code>StateSlotManager</code> own each slot; handles carry (epoch, slot, generation).</li>
-          <li>A release fence frees a slot only after the GPU confirms its last write.</li>
-          <li>Refuses async scheduling, runner CUDA graphs, prefix caching, parallelism and other options.</li>
-        </ul>
-      </div>
-      <div class="pr6">
-        <h3>PR 6 state layer (<code>4582db799d</code>)</h3>
-        <ul>
-          <li>Ordinary requests over a Mamba state block, plus one flag.</li>
-          <li>A <code>MambaSpec</code> layer that <code>MambaManager</code> allocates.</li>
-          <li>The standard scheduler; slots come from the Mamba metadata builder's state indices.</li>
-          <li>No release fence: one stream orders every step's writes.</li>
-          <li>No refusals specific to state.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="result">
-  <div class="wrap">
-    <div class="head col">
-      <p class="eyebrow">2 &middot; Result</p>
-      <h2>On one A40, the plugin on PR 6 gives the same final transcripts as on our current core</h2>
-    </div>
-    <div class="stack-lg">
-      <div class="col stack">
-        <p>Each run served the first 200 LibriSpeech test-clean utterances over <code>/v1/realtime</code>, with
-          audio paced in real time in 320 ms chunks. Three builds ran on the same pod:</p>
-        <ul class="plain">
-          <li><b>A</b>, the baseline: our core at <code>9c40a6ffd6</code> with plugin <code>main</code> at <code>acdb5b1</code>.</li>
-          <li><b>B</b>, PR 6: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a> at <code>92c0e64b68</code> with the plugin port <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a> at <code>57878f2447</code>.</li>
-          <li><b>C</b>, PR 6 with bounded history: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-bounded-history-20261120"><code>poc/pr6-bounded-history-20261120</code></a> at <code>566ef9259f</code> with the same plugin port.</li>
-        </ul>
-        <p>Build B is PR 6's head plus the model-state CUDA graph hooks and warmup skip from #67583, five
-          speech-to-text frontend commits from #67144 and #67151 that the baseline also carries, and one stub test.</p>
-      </div>
-      <div class="table-box">
-        <table>
-          <thead><tr><th>ID</th><th>Check</th><th>Outcome</th><th>Result</th></tr></thead>
-          <tbody>
-            <tr><td class="id">G1</td><td class="name">Slot reuse</td><td>With 9 blocks (8 usable state slots plus core's null block), 200 sessions at concurrency 8 give final transcripts equal to the baseline's.</td><td><span class="tag pass">pass</span></td></tr>
-            <tr><td class="id">G2</td><td class="name">200 utterances at concurrency 32</td><td>Build B's 200 final transcripts equal build A's, utterance for utterance, at a WER of 2.55%. A second baseline run also matched, so the noise floor is zero differences. Every run records 200 terminal <code>stop</code> finishes and no terminal <code>length</code> finish. <code>/v1/realtime</code> does not report per-turn finish reasons, so a turn that parked on <code>length</code> would not show.</td><td><span class="tag pass">pass</span></td></tr>
-            <tr><td class="id">G3</td><td class="name">Step time</td><td>Mean interval between output timestamps: A 30.19 and 31.01 ms, B 31.55 ms. This is not engine step time, and the two builds sit on different upstream bases. One round cannot separate a small slowdown from run-to-run variation.</td><td><span class="tag none">not established</span></td></tr>
-            <tr><td class="id">G4</td><td class="name">Startup memory</td><td>Core sizes the state pool from free memory: 6,439 blocks (37.87 GiB), where our core allocated 65 pages. GPU memory after startup is 43,315 MiB against 4,927 MiB. No out-of-memory error with the extensible KV cache on.</td><td><span class="tag pass">pass</span></td></tr>
-            <tr><td class="id">G5</td><td class="name">Stop token under async scheduling</td><td>The stub test shows that under async scheduling a stop token sampled before <code>max_tokens</code> is written into Mamba state, and under synchronous scheduling it is not. PR 6's claim that async scheduling is safe does not hold for this case.</td><td><span class="tag open">hazard confirmed</span></td></tr>
-            <tr><td class="id">G6</td><td class="name">Bounded-history trim</td><td>7 of 7 core tests pass on build C, both bounded-history variants included. Build C's 200 final transcripts equal build A's.</td><td><span class="tag pass">pass</span></td></tr>
-            <tr><td class="id">G7</td><td class="name">Plugin GPU test tiers</td><td>Registration: 2 pass, and 1 fails because <code>-cc.mode none</code> now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. Transcription: the whole-file tests that ran pass. The tier stopped making progress and was killed at its 1,800 s timeout, most likely in test setup or teardown; the cause is unresolved. It ran without its test audio and included tests of features the port removes.</td><td><span class="tag part">partial</span></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="table-box">
-        <table>
-          <thead><tr><th>Run</th><th class="num">Concurrency</th><th class="num">Final p50</th><th class="num">Final p90</th><th class="num">Final p99</th><th class="num">First segment p50</th><th class="num">First segment p90</th></tr></thead>
-          <tbody>
-            <tr><td>A, run 1</td><td class="num">32</td><td class="num">151.1 ms</td><td class="num">193.3 ms</td><td class="num">295.5 ms</td><td class="num">733.5 ms</td><td class="num">1,083.4 ms</td></tr>
-            <tr><td>A, run 2</td><td class="num">32</td><td class="num">154.6 ms</td><td class="num">197.1 ms</td><td class="num">281.0 ms</td><td class="num">725.1 ms</td><td class="num">1,085.2 ms</td></tr>
-            <tr><td>B</td><td class="num">32</td><td class="num">158.8 ms</td><td class="num">199.1 ms</td><td class="num">281.8 ms</td><td class="num">722.5 ms</td><td class="num">1,093.2 ms</td></tr>
-            <tr><td>C</td><td class="num">32</td><td class="num">151.6 ms</td><td class="num">192.7 ms</td><td class="num">289.2 ms</td><td class="num">729.0 ms</td><td class="num">1,103.0 ms</td></tr>
-            <tr><td>B, 8 state blocks</td><td class="num">8</td><td class="num">89.9 ms</td><td class="num">133.8 ms</td><td class="num">167.7 ms</td><td class="num">708.8 ms</td><td class="num">1,040.2 ms</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="col stack">
-        <p class="muted" style="font-size:0.9rem">Final latency runs from the client's final commit after the last audio to
-          <code>transcription.done</code>; first-segment latency runs from the first audio append to the first non-empty
-          delta. Paired by utterance against A run 1, the median final-latency difference is &minus;2.5 ms for A run 2,
-          +3.0 ms for B and &minus;0.8 ms for C. One round does not establish a latency difference.</p>
-        <p class="muted" style="font-size:0.9rem">Not measured: audio longer than 30.04 s (the utterances run 1.87 to
-          30.04 s), so no session was long enough to show per-turn growth; the worker-row exhaustion of
-          <a href="#gaps">B2</a>; admission beyond capacity; and async scheduling with the plugin.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="gaps">
-  <div class="wrap">
-    <div class="head col">
-      <p class="eyebrow">3 &middot; Core gaps</p>
-      <h2>Five gaps need a core change before the plugin can depend on PR 6</h2>
-      <p class="muted">B1 to B5 need core changes; B6 and B7 are behaviour changes to agree on. B1, B2 and B4 come from reading the source; the round did not exercise them.</p>
-    </div>
     <div class="table-box">
       <table>
-        <thead><tr><th>ID</th><th>Gap</th><th>Effect</th><th>Proposed fix</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>#67374 state pool (<code>2e7dfe972b</code>)</th><th>PR 6 state layer (<code>4582db799d</code>)</th></tr></thead>
         <tbody>
-          <tr><td class="id">B1</td><td class="name">No per-request failure</td><td>PR 6 deletes <code>StateCompletion</code>, the only way a model can end one request with an error. A failed plugin row raises <code>RuntimeError</code>, the engine core treats it as fatal, and every client's request fails.</td><td>A core path that fails one request from the model, as <code>fail_requests</code> did in #67374.</td><td><span class="tag open">open</span></td></tr>
-          <tr><td class="id">B2</td><td class="name">Worker request rows can run out</td><td>A resumed session leaves <code>num_waiting_for_streaming_input</code> while it still holds its block and worker row. If the scheduler skips it in a step, the admission check (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1116-L1121"><code>scheduler.py</code> L1116&ndash;L1121</a>) can admit another request. The budget-fit pool gives that request a block, and the worker's free-row assertion (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/worker/gpu/states.py#L99"><code>states.py</code> L99</a>) fails, ending the engine.</td><td>Count every resident request in the active-request check, or cap the pool at <code>max_num_seqs + 1</code>.</td><td><span class="tag open">open</span></td></tr>
-          <tr><td class="id">B3</td><td class="name">Session history grows without bound</td><td><code>_update_request_as_session</code> appends each input to the prompt, and the scheduler-side request keeps every audio chunk: about 20 KiB per 320 ms, or about 225 MiB per session-hour. Each turn re-sends the cumulative prompt and every feature record, so the work per turn grows with the session. <code>max_model_len</code> is the hard limit.</td><td>Trim consumed history in <code>_update_request_as_session</code> when every KV group is <code>recomputable=False</code>, keeping one computed token (<a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a>). The trim restarts positions at 1 each turn, which is safe for this model only because its <code>forward</code> ignores <code>positions</code>.</td><td><span class="tag fix">fix on PoC branch</span></td></tr>
-          <tr><td class="id">B4</td><td class="name">No stream admission</td><td>#67375 does not rebase onto PR 6: its logic reads the deleted state scheduler. Without it, a session opened beyond capacity waits with no transcript, and a parked session holds its block until its client disconnects, because <code>/v1/realtime</code> has no timeout. <code>max_num_active_reqs</code> idle clients block every new session. A reservation made before any input would not count as held, because <code>_holds_kv_blocks</code> keys on <code>num_computed_tokens &gt; 0</code>.</td><td>Admission and idle reclaim on <code>MambaManager</code>, with deadlines for never-fed, parked-idle and draining streams.</td><td><span class="tag open">open</span></td></tr>
-          <tr><td class="id">B5</td><td class="name">Model hooks not in PR 6</td><td>#67583's capture and lifecycle hooks apply to PR 6 without conflict; its state-pool parts do not. Without a warmup skip for state that tokens cannot rebuild, core warmup feeds the plugin synthetic multi-token prefills. On build B the ported hooks capture the plugin's encoder and decoder graphs (1.51 GiB).</td><td>Rebase #67583 without its state-pool parts, with the warmup skip keyed on <code>recomputable=False</code>, as build B does.</td><td><span class="tag fix">fix on PoC branch</span></td></tr>
-          <tr><td class="id">B6</td><td class="name">A length stop parks the session</td><td>PR 6 deletes <code>ends_stream</code>. A turn stopped by <code>max_tokens</code> now parks, and the next input continues from mid-turn state. Under #67374 any stop other than end-of-stream ended the stream.</td><td>Agree the stop rule.</td><td><span class="tag open">open</span></td></tr>
-          <tr><td class="id">B7</td><td class="name">New pages are not initialized</td><td><code>MambaManager</code> does not zero new blocks (<code>zeroes_new_blocks = False</code>), and core's block zeroer skips state pools. A reused page keeps every byte its previous owner wrote that the new owner's first step does not overwrite. The plugin port zeroes the page and writes its initial values in the forward, on the runner stream.</td><td>Document that the model owns initialization, or zero new blocks when <code>recomputable=False</code>.</td><td><span class="tag open">open</span></td></tr>
+          <tr><td class="name">Approach</td><td>A separate lifetime policy for state that tokens cannot rebuild</td><td>Ordinary requests over Mamba state, plus one flag</td></tr>
+          <tr><td class="name">State declaration</td><td><code>PersistentStateSpec</code> names each component and its initial value</td><td>One <code>MambaSpec</code> layer that <code>MambaManager</code> allocates</td></tr>
+          <tr><td class="name">Page owner</td><td><code>StateScheduler</code> and <code>StateSlotManager</code>; handles carry (epoch, page index, generation)</td><td>The standard scheduler; the Mamba metadata builder gives each row its page</td></tr>
+          <tr><td class="name">Release</td><td>A fence frees a page after the GPU confirms its last write</td><td>No fence; one stream orders every step's writes</td></tr>
+          <tr><td class="name">Refusals</td><td>Async scheduling, runner CUDA graphs, prefix caching, parallelism and the other options listed under <a href="#compare">Side by side</a></td><td>None specific to state</td></tr>
+          <tr><td class="name">Source size</td><td>+1,531 lines of source (38 files, +4,732 / &minus;31 in all)</td><td>34 lines under <code>vllm/</code> against <code>main</code>; against #67374, +261 / &minus;4,686</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </section>
 
-<section id="plugin">
+<section id="terms">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">4 &middot; Plugin changes</p>
-      <h2>The plugin declares one Mamba layer and drops the features PR 6 cannot carry</h2>
-      <p class="muted">The plugin's state is one <code>MambaBase</code> layer with one <code>SHORT_CONV</code> <code>MambaSpec</code>. It needs no state-pool code from core. CPU suite on build B before the frontend commits were added: 1,403 passed, 746 failed, 52 errors; the baseline passes 2,170. Every failure traces to a row below, to a deleted core API, or to the 12 route-guard tests that pass once the frontend commits are added.</p>
+      <p class="eyebrow">2 &middot; Terms</p>
+      <h2>Terms</h2>
     </div>
-    <div class="stack-lg">
-      <div class="table-box">
-        <table>
-          <thead><tr><th>Feature</th><th>In the port</th><th>Reason</th><th class="num">CPU tests</th></tr></thead>
-          <tbody>
-            <tr><td class="name">Stage 2 session factory</td><td>Dropped</td><td>Depends on admitted streams (B4).</td><td class="num">572</td></tr>
-            <tr><td class="name">Transaction graphs</td><td>Off</td><td>They need the pool layout and fixed pool addresses; the extensible KV cache, which PR 6 leaves on, rebinds the views.</td><td class="num">about 157</td></tr>
-            <tr><td class="name">Tests of deleted core APIs</td><td>Fail</td><td><code>PersistentStateSpec</code>, <code>StateSlotRows</code> and the plugin's dependency table.</td><td class="num">about 40</td></tr>
-            <tr><td class="name">Per-request failure isolation</td><td>Lost</td><td>Depends on B1.</td><td class="num">about 20</td></tr>
-            <tr><td class="name">Native burst</td><td>Refused</td><td>It rejects a request with history, and under PR 6 every turn after the first has history. Depends on B3.</td><td class="num">1</td></tr>
-            <tr><td class="name">Async scheduling</td><td>Still refused</td><td>PR 6 turns async scheduling on when the option is unset, so the serve command passes <code>--no-async-scheduling</code>. G5 shows the hazard remains.</td><td class="num">&mdash;</td></tr>
-            <tr><td class="name">CUDA graph mode</td><td>Set explicitly</td><td><code>-cc.mode none</code> alone now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. The plugin plans each step on the host and refuses core's outer capture, so it passes <code>-cc.cudagraph_mode none</code>. The requirement is the plugin's: core's capture hook runs under any mode.</td><td class="num">&mdash;</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="note col">
-        <p><b>What the port confirmed in PR 6's favour</b></p>
-        <ul class="plain" style="margin-top:0.5rem">
-          <li>Slot and freshness are equivalent: <code>block_ids[0][0]</code> is stable for a request's life, and <code>num_computed_tokens == 0</code> matches the builder's <code>has_initial_states_p</code>.</li>
-          <li>The plugin needs no release fence under synchronous scheduling (see <a href="#fence">Release fence</a>).</li>
-          <li>Budget-fit sizing with the startup floor matches the sizing we were considering for #67374.</li>
-          <li>The preemption raise cannot be reached in the plugin's layout: one state group in mode <code>none</code>, <code>block_size &gt;= max_model_len</code>, no speculative decoding and no KV connector.</li>
-          <li>Core's <code>/v1/realtime</code> hook works: 16 of 17 tests pass, and the one failure is the dropped session factory.</li>
-        </ul>
-      </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Page</td><td>The GPU memory that holds one session's state. #67374 calls a page's index a slot; PR 6's <code>MambaManager</code> allocates a page as a block. This text says page for both.</td></tr>
+          <tr><td class="name">Parked session</td><td>A session that has finished a turn and keeps its page while it waits for its next input.</td></tr>
+          <tr><td class="name">Worker request row</td><td>A row in the model runner's per-request tables. The worker has a fixed number of rows.</td></tr>
+          <tr><td class="name">Runner stream</td><td>The CUDA stream on which the model runner launches each step.</td></tr>
+          <tr><td class="name">EOS</td><td>The token that ends a turn.</td></tr>
+          <tr><td class="name">Budget-fit pool</td><td>A pool sized from the GPU memory left after startup, not from <code>max_num_seqs</code>.</td></tr>
+          <tr><td class="name">Build A, B, C</td><td>A is the baseline: the #67374 stack at <code>9c40a6ffd6</code> with plugin <code>main</code> at <code>acdb5b1</code>. B is PR 6 with the plugin port. C is B plus bounded history.</td></tr>
+          <tr><td class="name">The port</td><td>The plugin branch that runs on PR 6, <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a>.</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </section>
@@ -318,19 +219,19 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="map">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">5 &middot; Components</p>
+      <p class="eyebrow">3 &middot; Components</p>
       <h2>Where each piece lives</h2>
-      <p class="muted">At every layer, PR 6 replaces our state-specific classes with upstream Mamba code and one new field, <code>ManagerConfig.recomputable</code>.</p>
+      <p class="muted">At every layer, PR 6 replaces the #67374 classes with upstream Mamba code and one new field, <code>ManagerConfig.recomputable</code>.</p>
     </div>
     <div class="table-box">
       <table>
-        <thead><tr><th>Layer</th><th>Our state pool</th><th>PR 6 state layer</th><th>PR 6 deletes</th></tr></thead>
+        <thead><tr><th>Layer</th><th>#67374 state pool</th><th>PR 6 state layer</th><th>PR 6 deletes</th></tr></thead>
         <tbody>
-          <tr><td class="name">Model</td><td><code>PersistentStateLayerBase(spec)</code>; the model class sets <code>supports_persistent_state = True</code>; a <code>ModelState</code> binds rows each step.</td><td>A <code>MambaBase</code> layer whose <code>get_kv_cache_config()</code> returns <code>MambaManager.layer_config(spec, recomputable=False)</code>. The stub reuses <code>mamba_type = SHORT_CONV</code>.</td><td><code>model_executor/layers/state.py</code></td></tr>
-          <tr><td class="name">Worker and runner</td><td><code>StateSlotBindings</code>: <code>bind_rows</code> checks each handle; <code>prepare_step</code> and <code>initialize_state_slots</code> hooks; <code>finish_step</code> records the completion event.</td><td>The Mamba metadata builder and <code>bind_kv_cache</code>: <code>state_indices_tensor_d</code> and <code>state_indices_tensor_p</code> give each row's block; <code>has_initial_states_p</code> marks a fresh one.</td><td><code>worker/gpu/state_slots.py</code>, <code>prepare_step</code>, <code>initialize_state_slots</code></td></tr>
-          <tr><td class="name">KV cache manager</td><td><code>PersistentStateManager</code>: one page per slot, <code>block_size = 1</code>; a pool of <code>max_num_seqs + 1</code> pages fixed at startup.</td><td><code>MambaManager</code>: one block per request, <code>block_size = max_model_len</code> in the stub; <code>recomputable</code> is the only new field.</td><td><code>PersistentStateSpec</code>, <code>PersistentStateManager</code></td></tr>
-          <tr><td class="name">Scheduler</td><td><code>StateScheduler</code> and <code>StateSlotManager</code>: allocate a slot at first schedule, park at end-of-stream, replace the prompt on the next input, retire and fence on finish.</td><td>The standard scheduler: a startup capacity check; <code>_preempt_request</code> raises; <code>reset_prefix_cache</code> never resets running requests.</td><td><code>state_scheduler.py</code>, <code>state_slot_manager.py</code></td></tr>
-          <tr><td class="name">Engine core and config</td><td>Refuses async scheduling, runner CUDA graphs, the extensible KV cache, prefix caching, TP, PP or DP above 1, speculative decoding and other options. Drains retiring slots before a cache clear.</td><td>No special cases: async scheduling and CUDA graphs stay available, and the extensible KV cache stays on.</td><td>The refusals and the retiring-slot drain</td></tr>
+          <tr><td class="name">Model</td><td><code>PersistentStateLayerBase(spec)</code>; the model class sets <code>supports_persistent_state = True</code>; a <code>ModelState</code> binds rows each step</td><td>A <code>MambaBase</code> layer whose <code>get_kv_cache_config()</code> returns <code>MambaManager.layer_config(spec, recomputable=False)</code>; the stub reuses <code>mamba_type = SHORT_CONV</code></td><td><code>model_executor/layers/state.py</code></td></tr>
+          <tr><td class="name">Worker and runner</td><td><code>StateSlotBindings</code>: <code>bind_rows</code> checks each handle; <code>prepare_step</code> and <code>initialize_state_slots</code> hooks; <code>finish_step</code> records the completion event</td><td>The Mamba metadata builder and <code>bind_kv_cache</code>: <code>state_indices_tensor_d</code> and <code>state_indices_tensor_p</code> give each row's page; <code>has_initial_states_p</code> marks a new one</td><td><code>worker/gpu/state_slots.py</code>, <code>prepare_step</code>, <code>initialize_state_slots</code></td></tr>
+          <tr><td class="name">KV cache manager</td><td><code>PersistentStateManager</code>: one page per request, <code>block_size = 1</code>, in a pool of <code>max_num_seqs + 1</code> pages fixed at startup</td><td><code>MambaManager</code>: one page per request, <code>block_size = max_model_len</code> in the stub; <code>recomputable</code> is the only new field</td><td><code>PersistentStateSpec</code>, <code>PersistentStateManager</code></td></tr>
+          <tr><td class="name">Scheduler</td><td><code>StateScheduler</code> and <code>StateSlotManager</code>: allocate a page at first schedule, park the session at EOS, replace the prompt on the next input, retire and fence the page on finish</td><td>The standard scheduler with a startup capacity check; <code>_preempt_request</code> raises; <code>reset_prefix_cache</code> never resets running requests</td><td><code>state_scheduler.py</code>, <code>state_slot_manager.py</code></td></tr>
+          <tr><td class="name">Engine core and config</td><td>Refuses async scheduling, runner CUDA graphs, the extensible KV cache, prefix caching, TP, PP or DP above 1, speculative decoding and other options; drains retiring pages before a cache clear</td><td>No special cases: async scheduling and CUDA graphs stay available, and the extensible KV cache stays on</td><td>The refusals and the retiring-page drain</td></tr>
         </tbody>
       </table>
     </div>
@@ -340,16 +241,16 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="lifecycle">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">6 &middot; Lifecycle</p>
-      <h2>One streaming session, start to finish</h2>
-      <p class="muted">A <code>/v1/realtime</code> session is one resumable request that receives its audio in several inputs. Both designs keep the state page while the session waits for its next input. They differ in what the next input does and in when a closed session's page goes to another request.</p>
+      <p class="eyebrow">4 &middot; Lifecycle</p>
+      <h2>One streaming session</h2>
+      <p class="muted">A <code>/v1/realtime</code> session is one resumable request that receives its audio in several inputs. Both designs keep the page while the session is parked. They differ in what the next input does and in when a closed session's page goes to another request.</p>
     </div>
     <figure>
       <div class="scroll">
-        <svg viewBox="0 0 760 480" width="760" role="img" aria-label="PR 6 frees a closed session's block at once; ours waits for the GPU" font-size="13">
+        <svg viewBox="0 0 760 480" width="760" role="img" aria-label="PR 6 frees a closed session's page at once; #67374 waits for the GPU" font-size="13">
           <defs><marker id="life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
-          <text x="24" y="30" font-size="15" font-weight="600" fill="var(--ink)">PR 6 frees a closed session's block at once; ours waits for the GPU</text>
-          <text x="304" y="64" text-anchor="middle" font-weight="600" fill="var(--accent)">Our state pool (#67374)</text>
+          <text x="24" y="30" font-size="15" font-weight="600" fill="var(--ink)">PR 6 frees a closed session's page at once; #67374 waits for the GPU</text>
+          <text x="304" y="64" text-anchor="middle" font-weight="600" fill="var(--accent)">#67374 state pool</text>
           <text x="584" y="64" text-anchor="middle" font-weight="600" fill="var(--state)">PR 6 state layer</text>
           <g font-weight="600" fill="var(--ink)">
             <text x="24" y="112">First schedule</text>
@@ -370,16 +271,16 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             <rect x="456" y="240" width="256" height="56" rx="8"/><rect x="456" y="400" width="256" height="56" rx="8"/>
           </g>
           <g text-anchor="middle" font-weight="600" fill="var(--ink)">
-            <text x="304" y="104">Slot 5 bound</text><text x="304" y="184">Parked</text><text x="304" y="264">Prompt replaced</text><text x="304" y="344">Retiring, still occupied</text><text x="304" y="424">Freed after StateCompletion</text>
-            <text x="584" y="104">Block 5 allocated</text><text x="584" y="184">Waiting for input</text><text x="584" y="264">Prompt extended</text><text x="584" y="344">Block freed at once</text><text x="584" y="424">Reused next step</text>
+            <text x="304" y="104">Page 5 bound</text><text x="304" y="184">Parked</text><text x="304" y="264">Prompt replaced</text><text x="304" y="344">Retiring, still held</text><text x="304" y="424">Freed after StateCompletion</text>
+            <text x="584" y="104">Page 5 allocated</text><text x="584" y="184">Parked</text><text x="584" y="264">Prompt extended</text><text x="584" y="344">Page freed at once</text><text x="584" y="424">Reused next step</text>
           </g>
           <g text-anchor="middle" font-size="11.5" fill="var(--muted)">
-            <text x="304" y="122">handle (e, 5, g); initializers run</text><text x="304" y="202">keeps slot 5</text><text x="304" y="282">request never grows</text><text x="304" y="362">cleanup sent to the worker</text><text x="304" y="442">fence joins streams; new handle g+1</text>
-            <text x="584" y="122">state indices point at block 5</text><text x="584" y="202">keeps block 5</text><text x="584" y="282">dropped past max_model_len (B3)</text><text x="584" y="362">no retiring state, no fence</text><text x="584" y="442">not zeroed; plugin initializes (B7)</text>
+            <text x="304" y="122">handle (e, 5, g); initial values set</text><text x="304" y="202">keeps page 5</text><text x="304" y="282">no growth across inputs</text><text x="304" y="362">cleanup sent to the worker</text><text x="304" y="442">fence joins streams; handle g+1</text>
+            <text x="584" y="122">state indices point at page 5</text><text x="584" y="202">keeps page 5</text><text x="584" y="282">grows with each input (B3)</text><text x="584" y="362">no retiring state, no fence</text><text x="584" y="442">not zeroed; plugin initializes (B7)</text>
           </g>
         </svg>
       </div>
-      <figcaption>Amber boxes mark where PR 6 changes the outcome: the prompt grows with every input (B3), and a reused block keeps its previous owner's bytes (B7).</figcaption>
+      <figcaption>Amber boxes mark where PR 6 changes the outcome: the prompt grows with every input (<a href="#gaps">B3</a>), and a reused page keeps its previous owner's bytes (<a href="#gaps">B7</a>).</figcaption>
     </figure>
   </div>
 </section>
@@ -387,9 +288,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="fence">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">7 &middot; Release</p>
-      <h2>Why PR 6 can drop the release fence</h2>
-      <p class="muted">A slot is safe to reuse once nothing can still write to it for its previous owner. With every state write on the runner's main stream, CUDA runs step N+1 only after step N. Our fence exists for writes on other streams, which a model must register.</p>
+      <p class="eyebrow">5 &middot; Release</p>
+      <h2>Release fence</h2>
+      <p class="muted">A page is safe to reuse once nothing can still write to it for its previous owner. When every state write runs on the runner stream, CUDA runs step N+1 only after step N. The #67374 fence covers writes on other streams, which a model must register.</p>
     </div>
     <figure>
       <div class="scroll">
@@ -398,7 +299,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           <text x="24" y="30" font-size="15" font-weight="600" fill="var(--ink)">One stream orders state writes; a side stream needs a fence</text>
           <text x="24" y="70" font-size="13" font-weight="600" fill="var(--state)">One stream: ordering is enough (PR 6's claim)</text>
           <g stroke="var(--rule)"><line x1="160" x2="736" y1="104" y2="104"/><line x1="160" x2="736" y1="148" y2="148"/><line x1="160" x2="736" y1="264" y2="264"/><line x1="160" x2="736" y1="308" y2="308"/></g>
-          <g fill="var(--muted)"><text x="24" y="108">Host scheduler</text><text x="24" y="152">GPU main stream</text><text x="24" y="268">GPU main stream</text><text x="24" y="312">Side stream</text></g>
+          <g fill="var(--muted)"><text x="24" y="108">Host scheduler</text><text x="24" y="152">Runner stream</text><text x="24" y="268">Runner stream</text><text x="24" y="312">Side stream</text></g>
           <g fill="var(--surface)" stroke="var(--rule)" stroke-width="1.25">
             <rect x="168" y="132" width="220" height="32" rx="8"/><rect x="452" y="132" width="260" height="32" rx="8"/>
             <rect x="168" y="248" width="180" height="32" rx="8"/><rect x="488" y="248" width="224" height="32" rx="8"/>
@@ -407,17 +308,17 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           <circle cx="420" cy="104" r="6" fill="var(--accent)"/>
           <path d="M388 148H448" fill="none" stroke="var(--muted)" stroke-width="1.25" stroke-dasharray="4 4" marker-end="url(#fence-arrow)"/>
           <g text-anchor="middle" fill="var(--ink)">
-            <text x="278" y="152">Step N: A writes block 5</text><text x="582" y="152">Step N+1: B writes block 5</text>
-            <text x="258" y="268">Step N: A</text><text x="600" y="268">Step N+1: B writes slot 5</text>
-            <text x="410" y="312">A's late copy into slot 5</text>
-            <text x="420" y="90" font-size="11.5">A finishes; block 5 freed</text>
+            <text x="278" y="152">Step N: A writes page 5</text><text x="582" y="152">Step N+1: B writes page 5</text>
+            <text x="258" y="268">Step N: A</text><text x="600" y="268">Step N+1: B writes page 5</text>
+            <text x="410" y="312">A's late copy into page 5</text>
+            <text x="420" y="90" font-size="11.5">A finishes; page 5 freed</text>
           </g>
           <text x="420" y="186" text-anchor="middle" font-size="11.5" fill="var(--muted)">B's kernels queue behind A's</text>
-          <text x="24" y="228" font-size="13" font-weight="600" fill="var(--accent)">A side stream: why our fence exists</text>
+          <text x="24" y="228" font-size="13" font-weight="600" fill="var(--accent)">A side stream: why #67374 has a fence</text>
           <text x="712" y="350" text-anchor="end" font-size="11.5" fill="var(--ink)">Without a fence, A's copy can land after B's write</text>
         </svg>
       </div>
-      <figcaption>We checked the plugin against PR 6's claim. Graph capture runs before any session exists. Segment-graph replay and the stage-in and stage-out copies run on the runner stream. The asynchronous copies read status counters or upload plan buffers, and none writes a pool page. The claim holds for this plugin under synchronous scheduling. PR 6 has no contract that stops another model from writing state on a second stream.</figcaption>
+      <figcaption>The port meets PR 6's assumption under synchronous scheduling. Its CUDA graphs are captured before any session exists. The plugin's segment graphs (the graphed encoder and decoder) copy state into graph-owned buffers before replay and back after; those copies and the replay run on the runner stream. The plugin's asynchronous copies read status counters or upload plan buffers and write no page. PR 6 has no check that rejects a state write on another stream, so a different model could break the assumption.</figcaption>
     </figure>
   </div>
 </section>
@@ -425,19 +326,17 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="length">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">8 &middot; Session length</p>
-      <h2>Our request never grows; a PR 6 request grows with every input</h2>
+      <p class="eyebrow">6 &middot; Session length</p>
+      <h2>A #67374 request does not grow across inputs; a PR 6 request grows with each one</h2>
     </div>
     <div class="col stack">
-      <p>Our <code>StateScheduler</code> replaces the prompt with each input, and the state page carries the history.
-        PR 6 keeps upstream's session accounting: <code>_update_request_as_session</code> appends each input and every
-        kept output token to the prompt, and drops an update that would exceed <code>max_model_len</code> with a warning
+      <p><code>StateScheduler</code> replaces the prompt with each input, and the page carries the history. PR 6 keeps
+        upstream's session accounting: <code>_update_request_as_session</code> appends each input and every kept output
+        token to the prompt, and drops an update that would exceed <code>max_model_len</code>, with a warning
         (<a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/sched/scheduler.py#L1968-L2011"><code>scheduler.py</code> L1968&ndash;L2011</a> at <code>main</code> <code>07e4d6b957</code>).</p>
-      <ul class="plain">
-        <li>At <code>--max-model-len 77000</code>, with about one token plus the label tokens per 320 ms chunk, the token limit allows hours of audio.</li>
-        <li>Host memory and per-turn work bind first: the scheduler keeps every audio chunk, about 225 MiB per session-hour, and each turn re-sends the whole history (B3).</li>
-        <li>The bounded-history commit <a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a> trims consumed history, so a PR 6 request stays the same size, as ours does. At LibriSpeech lengths (at most 30.04 s) the round could not show the growth it removes.</li>
-      </ul>
+      <p>At <code>--max-model-len 77000</code>, with about one token plus the label tokens per 320 ms chunk, the token
+        limit allows hours of audio. Host memory and per-turn work run out first; <a href="#gaps">B3</a> gives the figures
+        and the fix.</p>
     </div>
   </div>
 </section>
@@ -445,14 +344,14 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="code">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">9 &middot; Model code</p>
+      <p class="eyebrow">7 &middot; Model code</p>
       <h2>What the model writes</h2>
       <p class="muted">Both snippets are abridged from the stub model <code>my_persistent_state.py</code> in the test plugin.</p>
     </div>
     <div class="stack-lg">
       <div class="pair">
         <div>
-          <h3>Our state pool: declare a page, bind rows each step</h3>
+          <h3>#67374: declare a page, bind rows each step</h3>
 <pre><code><span class="c"># model class</span>
 supports_persistent_state = True
 spec = PersistentStateSpec(
@@ -487,39 +386,162 @@ slots = md.state_indices_tensor_p[:md.num_prefills]
 totals[slots] = totals[slots] * md.has_initial_states_p + ...</code></pre>
         </div>
       </div>
-      <p class="col">Under our design, the pool runs each component's initializer when a slot gets a new generation.
-        Under PR 6, <code>MambaManager</code> does not zero new blocks, so the model applies
-        <code>has_initial_states_p</code> itself; the flag is false when the request has no computed tokens. That flag
-        is not enough for the plugin, whose first step does not write every state, so the port also initializes each
-        new page (B7).</p>
+      <p class="col">#67374 writes each component's initial value when a page gets a new generation. PR 6's
+        <code>MambaManager</code> does not zero new pages (<code>zeroes_new_blocks = False</code>), so the model applies
+        <code>has_initial_states_p</code> itself; the flag is false when the request has no computed tokens. The flag does
+        not suffice for the plugin, whose first step does not write every state, so the port also initializes each new
+        page (<a href="#gaps">B7</a>).</p>
     </div>
+  </div>
+</section>
+
+<section id="result">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">8 &middot; Result</p>
+      <h2>On one A40, PR 6 gives the same final transcripts as #67374</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Each run served the first 200 LibriSpeech test-clean utterances over <code>/v1/realtime</code>, with audio
+          paced in real time in 320 ms chunks, and builds A, B and C ran on the same pod. Build B,
+          <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a>
+          at <code>92c0e64b68</code>, is PR 6's head <code>4582db799d</code> plus the model-state CUDA graph hooks and
+          warmup skip from #67583, five speech-to-text frontend commits from #67144 and #67151 that build A also carries,
+          and one stub test. Build C is
+          <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-bounded-history-20261120"><code>poc/pr6-bounded-history-20261120</code></a>
+          at <code>566ef9259f</code>.</p>
+        <p>The Result column judges the PR 6 build: Pass means it behaved as build A did; Fail means it did not.</p>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>ID</th><th>Check</th><th>Outcome</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td class="id">G1</td><td class="name">Page reuse</td><td>With 9 pages (8 for sessions plus core's null page), 200 sessions at concurrency 8 give the same final transcripts as build A.</td><td><span class="tag pass">Pass</span></td></tr>
+            <tr><td class="id">G2</td><td class="name">200 utterances at concurrency 32</td><td>Build B's 200 final transcripts equal build A's, utterance for utterance, at a WER of 2.55%. A second run of build A also matched, so run-to-run noise is zero differences. Every run ends 200 sessions with <code>stop</code> and none with <code>length</code>. <code>/v1/realtime</code> does not report per-turn finish reasons, so a turn that parked on <code>length</code> would not show.</td><td><span class="tag pass">Pass</span></td></tr>
+            <tr><td class="id">G3</td><td class="name">Step time</td><td>The mean interval between output timestamps is 30.19 and 31.01 ms on build A and 31.55 ms on build B. The interval is not engine step time, and the builds sit on different upstream bases, so one round cannot separate a small slowdown from run-to-run variation.</td><td><span class="tag none">Not established</span></td></tr>
+            <tr><td class="id">G4</td><td class="name">Startup memory</td><td>Core sized the pool from free memory at 6,439 pages (37.87 GiB); build A allocated 65. GPU memory after startup was 43,315 MiB against 4,927 MiB. No out-of-memory error occurred with the extensible KV cache on.</td><td><span class="tag pass">Pass</span></td></tr>
+            <tr><td class="id">G5</td><td class="name">EOS under async scheduling</td><td>A stub test shows that under async scheduling an EOS sampled before <code>max_tokens</code> is written into Mamba state; under synchronous scheduling it is not. PR 6's description says its requests &ldquo;run with async scheduling and CUDA graphs&rdquo;; this case contradicts the first part.</td><td><span class="tag fail">Fail</span></td></tr>
+            <tr><td class="id">G6</td><td class="name">Bounded-history trim</td><td>7 of 7 core tests pass on build C, both bounded-history variants included, and build C's 200 final transcripts equal build A's.</td><td><span class="tag pass">Pass</span></td></tr>
+            <tr><td class="id">G7</td><td class="name">Plugin GPU test tiers</td><td>Registration: 2 tests pass, and 1 fails because <code>-cc.mode none</code> now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. Transcription: the whole-file tests that ran pass. The test runner killed the transcription tier at its 1,800 s timeout after the tier stopped making progress; the most likely cause is a hang in test setup or teardown, and the exact cause is unknown. The tier ran without its test audio and included tests of features the port removes.</td><td><span class="tag part">Partial</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Run</th><th class="num">Concurrency</th><th class="num">Final p50 (ms)</th><th class="num">Final p90 (ms)</th><th class="num">Final p99 (ms)</th><th class="num">First segment p50 (ms)</th><th class="num">First segment p90 (ms)</th></tr></thead>
+          <tbody>
+            <tr><td>A, run 1</td><td class="num">32</td><td class="num">151.1</td><td class="num">193.3</td><td class="num">295.5</td><td class="num">733.5</td><td class="num">1,083.4</td></tr>
+            <tr><td>A, run 2</td><td class="num">32</td><td class="num">154.6</td><td class="num">197.1</td><td class="num">281.0</td><td class="num">725.1</td><td class="num">1,085.2</td></tr>
+            <tr><td>B</td><td class="num">32</td><td class="num">158.8</td><td class="num">199.1</td><td class="num">281.8</td><td class="num">722.5</td><td class="num">1,093.2</td></tr>
+            <tr><td>C</td><td class="num">32</td><td class="num">151.6</td><td class="num">192.7</td><td class="num">289.2</td><td class="num">729.0</td><td class="num">1,103.0</td></tr>
+            <tr><td>B, 9 pages</td><td class="num">8</td><td class="num">89.9</td><td class="num">133.8</td><td class="num">167.7</td><td class="num">708.8</td><td class="num">1,040.2</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col stack">
+        <p class="muted" style="font-size:0.9rem">Final latency runs from the client's final commit after the last audio to
+          <code>transcription.done</code>; first-segment latency runs from the first audio append to the first non-empty
+          delta. Paired by utterance against build A's first run, the median final-latency difference is &minus;2.5 ms for
+          build A's second run, +3.0 ms for build B and &minus;0.8 ms for build C. One round does not establish a latency
+          difference.</p>
+        <p class="muted" style="font-size:0.9rem">The round did not measure audio longer than 30.04 s (the utterances run
+          1.87 to 30.04 s), so no session ran long enough to show per-turn growth. It also did not exercise the worker-row
+          failure in <a href="#gaps">B2</a>, admission beyond capacity (<a href="#gaps">B4</a>) or async scheduling with the plugin.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="gaps">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">9 &middot; Core gaps</p>
+      <h2>Five gaps need a core change before the plugin can depend on PR 6</h2>
+      <p class="muted">B1 to B5 need core changes; B6 and B7 are behaviour changes to settle. B1, B2, B4 and B6 come from reading the source; the round did not exercise them.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>ID</th><th>Gap</th><th>Effect</th><th>Fix</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="id">B1</td><td class="name">No per-request failure</td><td>PR 6 deletes <code>StateCompletion</code>, which #67374 uses to end one request with an error. A failed plugin row now raises <code>RuntimeError</code>; the engine core treats the exception as fatal, and every client's request fails.</td><td>Add a core path that fails one request from the model, as <code>fail_requests</code> does in #67374.</td><td><span class="tag open">Open</span></td></tr>
+          <tr><td class="id">B2</td><td class="name">Worker request rows can run out</td><td>A resumed session leaves <code>num_waiting_for_streaming_input</code> while it still holds its page and worker request row. If the scheduler skips that session in a step, the admission check (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1116-L1121"><code>scheduler.py</code> L1116&ndash;L1121</a>) can admit another request. The budget-fit pool gives the new request a page, but no worker request row is free. The worker's assertion (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/worker/gpu/states.py#L99"><code>states.py</code> L99</a>) then fails, and the engine stops.</td><td>Count every request that holds a worker request row in the admission check, or cap the pool at <code>max_num_seqs + 1</code> pages.</td><td><span class="tag open">Open</span></td></tr>
+          <tr><td class="id">B3</td><td class="name">Session history grows without bound</td><td><code>_update_request_as_session</code> appends each input to the prompt, and the scheduler keeps every audio chunk of the session: about 20 KiB per 320 ms chunk, or about 225 MiB per session-hour. Each turn re-sends the cumulative prompt and every feature record, so the work per turn grows with the session's length. <code>max_model_len</code> is the hard limit.</td><td>Trim consumed history in <code>_update_request_as_session</code> when every KV group is <code>recomputable=False</code>, keeping one computed token (<a href="https://github.com/pdtgct/vllm/commit/566ef9259f"><code>566ef9259f</code></a>). The trim restarts positions at 1 each turn. The plugin is safe only because its <code>forward</code> ignores <code>positions</code>, so a general version needs a contract on positions and sampling history.</td><td><span class="tag fix">Fix on PoC branch</span></td></tr>
+          <tr><td class="id">B4</td><td class="name">No stream admission</td><td>#67375 does not rebase onto PR 6, because its logic reads the deleted state scheduler. Without admission, a session opened beyond capacity waits with no transcript. <code>/v1/realtime</code> has no timeout, so a parked session keeps its page until its client disconnects, and <code>max_num_active_reqs</code> idle clients block every new session. A page reserved before any input would not count as held, because <code>_holds_kv_blocks</code> tests <code>num_computed_tokens &gt; 0</code>.</td><td>Build admission and idle reclaim on <code>MambaManager</code>, with deadlines for streams that are never fed, parked idle or draining.</td><td><span class="tag open">Open</span></td></tr>
+          <tr><td class="id">B5</td><td class="name">Model hooks not in PR 6</td><td>#67583's capture and lifecycle hooks apply to PR 6 without conflict; its state-pool parts do not. Without a warmup skip for state that tokens cannot rebuild, core warmup sends the plugin synthetic multi-token prefills, which the plugin refuses. On build B the ported hooks capture the plugin's encoder and decoder graphs (1.51 GiB).</td><td>Rebase #67583 without its state-pool parts, and key the warmup skip on <code>recomputable=False</code>, as build B does.</td><td><span class="tag fix">Fix on PoC branch</span></td></tr>
+          <tr><td class="id">B6</td><td class="name">A length stop parks the session</td><td>PR 6 deletes <code>ends_stream</code>. A turn that stops at <code>max_tokens</code> now parks, and the next input continues from mid-turn state. #67374 ends the session on any stop other than EOS.</td><td>Choose one rule for a turn that stops on <code>length</code>: end the session, as #67374 does, or park it, as PR 6 does.</td><td><span class="tag open">Open</span></td></tr>
+          <tr><td class="id">B7</td><td class="name">New pages are not initialized</td><td><code>MambaManager</code> does not zero new pages (<code>zeroes_new_blocks = False</code>), and core's block zeroer skips state pools. A reused page keeps every byte its previous owner wrote that the new owner's first step does not overwrite. The port zeroes the page and writes its initial values in the forward, on the runner stream.</td><td>Document that the model initializes new pages, or zero new pages when <code>recomputable=False</code>.</td><td><span class="tag open">Open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="plugin">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">10 &middot; Plugin changes</p>
+      <h2>The plugin declares one Mamba layer and drops the features PR 6 cannot carry</h2>
+      <p class="muted">The port declares its state as one <code>MambaBase</code> layer with one <code>SHORT_CONV</code> <code>MambaSpec</code> and needs no state-pool code from core. On CPU, before the frontend commits were added to build B, the plugin suite gave 1,403 passed, 746 failed and 52 errors, against 2,170 passed on build A. Every failure traces to a row below, to a deleted core API, or to 12 route-guard tests that pass once the frontend commits are added.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Feature</th><th>In the port</th><th>Reason</th><th class="num">CPU tests</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Stage 2 session factory, the plugin's session layer for frontends that admit streams through #67375</td><td>Dropped</td><td>It depends on stream admission (B4).</td><td class="num">572</td></tr>
+          <tr><td class="name">Transaction graphs, the plugin's opt-in CUDA graphs of a whole step at fixed page addresses</td><td>Off</td><td>They need the pool layout and fixed page addresses. The extensible KV cache, which PR 6 leaves on, rebinds the page views when it grows.</td><td class="num">About 157</td></tr>
+          <tr><td class="name">Tests of deleted core APIs</td><td>Fail</td><td>They test <code>PersistentStateSpec</code>, <code>StateSlotRows</code> and the plugin's dependency table.</td><td class="num">About 40</td></tr>
+          <tr><td class="name">Per-request failure isolation</td><td>Lost</td><td>It depends on B1.</td><td class="num">About 20</td></tr>
+          <tr><td class="name">Behaviour the port changes on purpose</td><td>Changed</td><td>The port defers retirement to the next call (2 tests), treats a step with an unrecorded row as a dummy step (1) and sees unset async scheduling resolve to on (1).</td><td class="num">4</td></tr>
+          <tr><td class="name">Native burst, a plugin input mode</td><td>Refused</td><td>The mode rejects a request with history, and under PR 6 every turn after the first has history. It depends on B3.</td><td class="num">1</td></tr>
+          <tr><td class="name">Async scheduling</td><td>Still refused</td><td>PR 6 turns async scheduling on when the option is unset, so the serve command passes <code>--no-async-scheduling</code>. G5 shows the EOS write.</td><td class="num">None counted</td></tr>
+          <tr><td class="name">CUDA graph mode</td><td>Set explicitly</td><td><code>-cc.mode none</code> alone now resolves <code>cudagraph_mode</code> to <code>FULL_DECODE_ONLY</code>. The plugin plans each step on the host and refuses core's outer capture, so the serve command passes <code>-cc.cudagraph_mode none</code>. The requirement is the plugin's: core's capture hook runs under any mode.</td><td class="num">None counted</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="holds">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">11 &middot; Claims that hold</p>
+      <h2>PR 6's claims that hold for the plugin</h2>
+    </div>
+    <ul class="plain col">
+      <li>Page identity and freshness are equivalent: <code>block_ids[0][0]</code> is stable for a request's life, and <code>num_computed_tokens == 0</code> matches the metadata builder's <code>has_initial_states_p</code>.</li>
+      <li>The plugin needs no release fence under synchronous scheduling (see <a href="#fence">Release fence</a>).</li>
+      <li>Budget-fit sizing works with the plugin's graphs resident, because core sizes the pool after graph capture (G4).</li>
+      <li>The preemption raise cannot be reached in the plugin's layout: one state group in mode <code>none</code>, <code>block_size &gt;= max_model_len</code>, no speculative decoding and no KV connector.</li>
+      <li>Core's <code>/v1/realtime</code> hook works with the port: 16 of 17 tests pass, and the one failure is the dropped session factory.</li>
+    </ul>
   </div>
 </section>
 
 <section id="compare">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">10 &middot; Side by side</p>
-      <h2>Each concern, with what the port found</h2>
-      <p class="muted">B numbers refer to the core gaps; G numbers to the A40 checks.</p>
+      <p class="eyebrow">12 &middot; Side by side</p>
+      <h2>Side by side</h2>
+      <p class="muted">A reference for each concern; the last column points to the row that holds the evidence.</p>
     </div>
     <div class="table-box">
       <table>
-        <thead><tr><th>Concern</th><th>Our state pool (#67374)</th><th>PR 6 state layer</th><th>Finding</th></tr></thead>
+        <thead><tr><th>Concern</th><th>#67374 state pool</th><th>PR 6 state layer</th><th>See</th></tr></thead>
         <tbody>
-          <tr><td class="name">Pool size</td><td>Exactly <code>max_num_seqs + 1</code> pages, or the override; startup fails and reports the largest <code>max_num_seqs</code> that fits.</td><td>Sized from the memory budget like any KV cache; startup fails unless <code>(num_blocks &minus; 1) // blocks_per_request</code> is at least the active-request limit.</td><td>6,439 blocks of 6.02 MiB on an A40, against 65 pages (G4). The larger pool exposes B2.</td></tr>
-          <tr><td class="name">Beyond capacity</td><td>Requests wait in the queue; #67375 adds stream admission with deadlines.</td><td>Requests wait in the queue.</td><td>No timeout, so <code>max_num_active_reqs</code> idle clients block new sessions; #67375 does not rebase (B4).</td></tr>
-          <tr><td class="name">Slot identity</td><td>Handle (epoch, slot, generation); stale handles are rejected.</td><td>Block id from the metadata builder; no generation.</td><td>Equivalent: the block id is stable for a request's life, and the plugin draws its own generation for each fresh row.</td></tr>
-          <tr><td class="name">Fresh state</td><td>Initializers run on each new generation.</td><td>The model applies <code>has_initial_states_p</code>; blocks are not zeroed.</td><td>The flag matches the plugin's own test; pages keep stale bytes, so the plugin initializes them (B7).</td></tr>
-          <tr><td class="name">Next input</td><td>Replaces the prompt; the request sets no length limit.</td><td>Extends the prompt; dropped past <code>max_model_len</code>.</td><td>About 225 MiB of retained audio per session-hour and growing per-turn work (B3); the trim passes its tests (G6).</td></tr>
-          <tr><td class="name">Release</td><td>Fence: an event on the main stream after joining registered streams; the host waits, then frees.</td><td>Freed at finish; relies on one-stream ordering.</td><td>Holds for this plugin under synchronous scheduling; not a core contract.</td></tr>
-          <tr><td class="name">Preemption</td><td>Finishes the request with an error; unreachable by sizing.</td><td>Raises <code>RuntimeError</code> in the scheduler (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1920-L1923">L1920&ndash;L1923</a>); unreachable by the startup check.</td><td>Unreachable in the plugin's layout; a layout that mixes this group with attention groups appears able to reach it. A failed row also ends the engine (B1).</td></tr>
-          <tr><td class="name">Cache clear</td><td>Refused with a message while a slot is bound or parked; drains retiring slots.</td><td><code>reset_prefix_cache</code> never resets running requests and returns <code>False</code>.</td><td>No finding.</td></tr>
-          <tr><td class="name">Async scheduling</td><td>Refused: the step after end-of-stream could advance state on the stop token.</td><td>Allowed.</td><td>The hazard remains: a stop token before <code>max_tokens</code> is written into state (G5).</td></tr>
-          <tr><td class="name">Runner CUDA graphs</td><td>Refused; the model captures its own graphs through #67583.</td><td>Allowed; the stub test runs with and without graphs.</td><td>They cannot run with the plugin's own graphs. The port turns core's graphs off and captures its encoder and decoder graphs through the ported hooks.</td></tr>
-          <tr><td class="name">Stop rule</td><td>Any stop other than end-of-stream ends the stream.</td><td><code>ends_stream</code> deleted; a length stop parks.</td><td>The next input continues from mid-turn state (B6).</td></tr>
-          <tr><td class="name">PRs above it</td><td>#67375 (admission) and #67583 (model hooks, graph capture) stack on #67374.</td><td>Built on #67374's branch.</td><td>#67375 does not rebase; #67583's hooks do, without its state-pool parts (B4, B5).</td></tr>
-          <tr><td class="name">Other options</td><td>Refuses TP, PP, DP, DCP or PCP above 1, speculative decoding, prefix caching, KV transfer, DBO, sleep mode and HiSparse.</td><td>No refusals specific to state.</td><td>Not tested.</td></tr>
+          <tr><td class="name">Pool size</td><td><code>max_num_seqs + 1</code> pages, fixed; startup reports the largest <code>max_num_seqs</code> that fits</td><td>Budget-fit; startup requires <code>(num_blocks &minus; 1) // blocks_per_request</code> &ge; the active-request limit</td><td><a href="#result">G4</a>, <a href="#gaps">B2</a></td></tr>
+          <tr><td class="name">Beyond capacity</td><td>Requests wait; #67375 refuses a stream at open and reclaims idle pages</td><td>Requests wait; nothing reclaims a parked page</td><td><a href="#gaps">B4</a></td></tr>
+          <tr><td class="name">Page identity</td><td>Handle (epoch, page index, generation); stale handles rejected</td><td>Page index from the metadata builder; no generation</td><td><a href="#holds">Claims that hold</a></td></tr>
+          <tr><td class="name">New page</td><td>Initial values written on each new generation</td><td><code>has_initial_states_p</code>; pages not zeroed</td><td><a href="#gaps">B7</a></td></tr>
+          <tr><td class="name">Next input</td><td>Replaces the prompt</td><td>Extends the prompt up to <code>max_model_len</code></td><td><a href="#gaps">B3</a>, <a href="#result">G6</a></td></tr>
+          <tr><td class="name">Release</td><td>Fence after registered streams join, then free</td><td>Free at finish; one-stream ordering</td><td><a href="#fence">Release fence</a></td></tr>
+          <tr><td class="name">Preemption</td><td>Fails the request with an error</td><td>Raises <code>RuntimeError</code> (<a href="https://github.com/pdtgct/vllm/blob/4582db799d/vllm/v1/core/sched/scheduler.py#L1920-L1923">L1920&ndash;L1923</a>)</td><td><a href="#gaps">B1, B2</a></td></tr>
+          <tr><td class="name">Cache clear</td><td>Refused while a page is bound or parked; drains retiring pages</td><td><code>reset_prefix_cache</code> leaves running requests alone and returns <code>False</code></td><td>No finding</td></tr>
+          <tr><td class="name">Async scheduling</td><td>Refused</td><td>Allowed</td><td><a href="#result">G5</a></td></tr>
+          <tr><td class="name">Runner CUDA graphs</td><td>Refused; the model captures its own through #67583</td><td>Allowed</td><td><a href="#plugin">Plugin changes</a></td></tr>
+          <tr><td class="name">Stop rule</td><td>Any stop other than EOS ends the session</td><td>A length stop parks</td><td><a href="#gaps">B6</a></td></tr>
+          <tr><td class="name">PRs above it</td><td>#67375 and #67583 stack on #67374</td><td>Built on #67374's branch</td><td><a href="#gaps">B4, B5</a></td></tr>
+          <tr><td class="name">Other options</td><td>Refuses TP, PP, DP, DCP or PCP above 1, speculative decoding, prefix caching, KV transfer, DBO, sleep mode and HiSparse</td><td>No refusals specific to state</td><td>Not tested</td></tr>
         </tbody>
       </table>
     </div>
@@ -529,15 +551,15 @@ totals[slots] = totals[slots] * md.has_initial_states_p + ...</code></pre>
 <section id="sources">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">11 &middot; Sources</p>
+      <p class="eyebrow">13 &middot; Sources</p>
       <h2>Sources</h2>
     </div>
     <ul class="plain col">
-      <li><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code> (commits <code>253aa03d1d</code> and <code>4582db799d</code>), based on #67374 at <code>2e7dfe972b</code>. Its description gives the line counts.</li>
-      <li>Our reply on PR 6 with the A40 result: <a href="https://github.com/pdtgct/vllm/pull/6#issuecomment-7039667149">comment 7039667149</a>.</li>
-      <li>Our design: <a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">vllm#67375</a> and <a href="https://github.com/vllm-project/vllm/pull/67583">vllm#67583</a>, and RFC 1, <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a>.</li>
+      <li><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code> (commits <code>253aa03d1d</code> and <code>4582db799d</code>), based on #67374 at <code>2e7dfe972b</code>. Its description gives the line counts and the claim quoted in G5.</li>
+      <li>The reply on PR 6 with the A40 result: <a href="https://github.com/pdtgct/vllm/pull/6#issuecomment-7039667149">comment 7039667149</a>.</li>
+      <li>#67374 design: <a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">vllm#67375</a> and <a href="https://github.com/vllm-project/vllm/pull/67583">vllm#67583</a>, and RFC 1, <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a>. The #67374 source size comes from the <a href="../">persistent-state reviewer guide</a>.</li>
       <li>Upstream behaviour at vLLM <code>main</code> <code>07e4d6b957</code>: <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/sched/scheduler.py#L1968-L2011"><code>scheduler.py</code> L1968&ndash;L2011</a> (session updates), <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/core/single_type_kv_cache_manager.py#L1934-L1980"><code>single_type_kv_cache_manager.py</code> L1934&ndash;L1980</a> (<code>MambaManager</code>), <a href="https://github.com/vllm-project/vllm/blob/07e4d6b957/vllm/v1/attention/backends/mamba_attn.py#L514"><code>mamba_attn.py</code> L514</a> (<code>has_initial_states_p</code>).</li>
-      <li>Plugin: <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">pdtgct/vllm-nemotron-asr-streaming-plugin</a>, <code>main</code> at <code>acdb5b1</code>; the port is on <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a> at <code>57878f2447</code>.</li>
+      <li>Plugin: <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">pdtgct/vllm-nemotron-asr-streaming-plugin</a>, <code>main</code> at <code>acdb5b1</code>; the port is <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/tree/poc/state-layer-pr6-20261120"><code>poc/state-layer-pr6-20261120</code></a> at <code>57878f2447</code>.</li>
       <li>Core builds on <code>pdtgct/vllm</code>, pushed and not merged: <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-plugin-build-20261120"><code>poc/pr6-plugin-build-20261120</code></a> at <code>92c0e64b68</code> and <a href="https://github.com/pdtgct/vllm/tree/poc/pr6-bounded-history-20261120"><code>poc/pr6-bounded-history-20261120</code></a> at <code>566ef9259f</code>.</li>
     </ul>
   </div>
