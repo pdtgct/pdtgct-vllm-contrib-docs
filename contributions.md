@@ -22,9 +22,9 @@ Last updated 2026-11-21. Status and head commits come from GitHub on that date; 
 
 | PR | Title | RFC | Head | State | Next action |
 | --- | --- | --- | --- | --- | --- |
-| [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2041ef2db3` | ready | Review |
-| [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `baacf2fb3c` | ready | Review (stacked on #67374); the three bot findings on #67583, all in this PR's code, are fixed; replies drafted |
-| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | ready | Review (stacked on #67375) |
+| [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2041ef2db3` | draft | Close when the state-layer PR opens ([plan](https://github.com/vllm-project/vllm/issues/65543#issuecomment-7069320948)) |
+| [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `baacf2fb3c` | draft | Close when the state-layer PR opens; admission to be rewritten for the KV cache manager. The three bot findings on #67583, all in this PR's code, are fixed |
+| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | draft | Close when the state-layer PR opens; reopen the model hooks as a smaller PR on `main` |
 | [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `df75acd235` | ready | Review |
 | [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `ad849dc16b` | ready | Review (stacked on #65546) |
 | [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `b7ec4c2660` | ready, review required | Review |
