@@ -6,7 +6,13 @@ Live status, with views by RFC, is in the GitHub Project [vLLM contributions](ht
 
 Last updated 2026-11-21. Status and head commits come from GitHub on that date; the lists come from `gh search` by author, which can miss items.
 
-`vllm-project/vllm` limits contributors without write access to 6 open pull requests ([CONTRIBUTING.md, "Pull Request Limits and Escalation"](https://github.com/vllm-project/vllm/blob/main/CONTRIBUTING.md)). Pete has 9 open there, so new pull requests wait on fork branches until some close.
+`vllm-project/vllm` limits contributors without write access to 6 open pull requests ([CONTRIBUTING.md, "Pull Request Limits and Escalation"](https://github.com/vllm-project/vllm/blob/main/CONTRIBUTING.md)). Pete has 9 open there, 3 of them drafts, so new pull requests wait on fork branches until some close. GitHub allowed undrafting at 5 non-draft pull requests and refused it at 8, which fits a limit of 6 on non-draft pull requests.
+
+## Plan (2026-11-21)
+
+- RFC 1: explore the Mamba state layer ([pdtgct/vllm#6](https://github.com/pdtgct/vllm/pull/6)) in place of the state pool. #67374 and #67375 stay draft.
+- #67583, the model hooks, should not depend on #67374 or #67375. Today it does: it carries their commits and changes state-pool files. Making it independent means re-cutting it as a hooks-only change on `main`, which waits on Pete's go-ahead.
+- RFC 3: move forward. vllm-omni#9849 needs only vllm#65549, and neither depends on RFC 1. If the state layer replaces the state pool, RFC 3's section 1 and its migration step 5 need rewording.
 
 ## RFCs
 
@@ -24,14 +30,14 @@ Last updated 2026-11-21. Status and head commits come from GitHub on that date; 
 | --- | --- | --- | --- | --- | --- |
 | [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2041ef2db3` | draft | Close when the state-layer PR opens ([plan](https://github.com/vllm-project/vllm/issues/65543#issuecomment-7069320948)) |
 | [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `baacf2fb3c` | draft | Close when the state-layer PR opens; admission to be rewritten for the KV cache manager. The three bot findings on #67583, all in this PR's code, are fixed |
-| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | draft | Close when the state-layer PR opens; reopen the model hooks as a smaller PR on `main` |
+| [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | draft | Re-cut as a hooks-only change on `main`, independent of #67374 and #67375 (waits on Pete's go-ahead) |
 | [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `df75acd235` | ready | Review |
 | [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `ad849dc16b` | ready | Review (stacked on #65546) |
 | [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `b7ec4c2660` | ready, review required | Review |
 | [vllm#67144](https://github.com/vllm-project/vllm/pull/67144) | [Bugfix][Frontend] Fail speech-to-text requests that finish with error or abort | none | `3e4ab32f04` | ready, review required | Review |
 | [vllm#67151](https://github.com/vllm-project/vllm/pull/67151) | [Frontend] Pass use_beam_search and max_completion_tokens to speech-to-text models | none | `dbae7c72cf` | ready, review required | Review |
-| [vllm#65549](https://github.com/vllm-project/vllm/pull/65549) | [Core][MRv2] Build ModelState through an overridable runner method | RFC 3 | `b0469870db` | draft | Hold for RFC 3 |
-| [vllm-omni#9849](https://github.com/vllm-project/vllm-omni/pull/9849) | [Core] Use vLLM's model-state hook in the MRv2 runner | RFC 3 | `5c6d3d0ba5` | draft | Hold for RFC 3 |
+| [vllm#65549](https://github.com/vllm-project/vllm/pull/65549) | [Core][MRv2] Build ModelState through an overridable runner method | RFC 3 | `63fbc1cde2` | ready | Review; no RFC 1 dependency |
+| [vllm-omni#9849](https://github.com/vllm-project/vllm-omni/pull/9849) | [Core] Use vLLM's model-state hook in the MRv2 runner | RFC 3 | `68f9c7626b` | draft | Undraft when vllm#65549 merges; needs only #65549 |
 
 ## Pull requests to be opened
 
