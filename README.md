@@ -4,6 +4,8 @@ Reviewer guides for Pete Tanski's contributions to vLLM and vLLM-Omni, published
 
 Index: https://pdtgct.github.io/pdtgct-vllm-contrib-docs/ (`index.html`).
 
+[Contributions ledger](contributions.md): issues, RFCs and pull requests in vllm-project, with the fork branches that wait to be opened.
+
 | Guide | Source |
 | --- | --- |
 | [Engine-managed persistent state for streaming models](https://pdtgct.github.io/pdtgct-vllm-contrib-docs/persistent-state/): RFC 1 (vllm#65543), RFC 2 (vllm#65545), RFC 3 (vllm-omni#9848) and the speech-to-text fixes | `persistent-state/index.html` |
