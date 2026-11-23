@@ -1,0 +1,956 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Persistent state in vLLM: a maintainer's guide to the landscape</title>
+<meta name="description" content="The proposal is the right design for sessions that keep state tokens cannot rebuild, such as streaming ASR: it keeps PR 6&#x27;s small storage change and adds the nine rules the state pool showed are needed, without refusing async scheduling or CUDA graphs. Bounded sessions remain the right design for hours-long attention sessions, and the proposal neither helps nor harms them. Hybrid and full-duplex models need both at once, which no design covers yet; one turn transition with a retention policy per KV group would.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: the persistent-state guide's tokens and reading column; tables widen to 64rem, five-design tables scroll from 60rem. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #161a21;
+  --muted: #586170;
+  --rule: #d9dde4;
+  --accent: #0d6b66;      /* our state pool, links */
+  --accent-soft: #dcefed;
+  --state: #b0640c;       /* PR 6 changes and open gaps: amber */
+  --state-soft: #f6e7d3;
+  --kv: #3552c8;
+  --kv-soft: #e1e7fb;
+  --ok: #2c7a3f;
+  --ok-soft: #dff0e3;
+  --warn: #a15c00;
+  --code-bg: #eef0f3;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+    --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+    --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+    --code-bg: #1d222b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1217; --surface: #161a21; --ink: #e5e8ed; --muted: #9ba4b2; --rule: #2b313b;
+  --accent: #52c2b8; --accent-soft: #163634; --state: #eaa651; --state-soft: #3a2a14;
+  --kv: #93a8ff; --kv-soft: #1e2647; --ok: #6cc583; --ok-soft: #173321; --warn: #e6a64a;
+  --code-bg: #1d222b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 var(--f-body);
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.wrap {
+  max-width: 64rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.col { max-width: 44rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code, .mono { font-family: var(--f-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 0.9rem 1rem; overflow-x: auto; font: 0.82rem/1.5 var(--f-mono); }
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c { color: var(--muted); }
+h1, h2, h3 { font-family: var(--f-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: clamp(1.45rem, 3vw, 1.9rem); font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1.4 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+.stack-lg { display: flex; flex-direction: column; gap: 1.6rem; }
+ul.plain { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.4rem; }
+
+header.top { border-bottom: 1px solid var(--rule); background: var(--surface); }
+header.top .wrap { padding-block: 2.6rem 2.2rem; display: flex; flex-direction: column; gap: 1.1rem; }
+.lede { font-size: 1.15rem; max-width: 44rem; }
+.ask { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; margin-top: 0.4rem; }
+.ask div { border-top: 3px solid var(--accent); padding-top: 0.55rem; min-width: 0; }
+.ask div.amber { border-top-color: var(--state); }
+.ask b { display: block; font-family: var(--f-display); font-size: 1.05rem; }
+.ask span { color: var(--muted); font-size: 0.92rem; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.9rem; padding-top: 0.4rem; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); text-decoration: underline; }
+
+section { padding-block: 3rem 0.5rem; }
+section > .wrap > .head { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.3rem; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem; }
+figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 0.7rem; max-width: 52rem; }
+.scroll { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+svg text { font-family: var(--f-body); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.id { font: 500 0.85rem var(--f-mono); white-space: nowrap; }
+td.name { font-weight: 600; }
+.table-box { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.table-box table { min-width: 44rem; }
+.table-box.wide table { min-width: 60rem; }
+
+.tag { display: inline-block; font: 500 0.72rem/1.5 var(--f-mono); padding: 0 0.45em; border-radius: 3px; white-space: nowrap; }
+.tag.open { background: var(--state-soft); color: var(--state); }
+.tag.fix { background: var(--accent-soft); color: var(--accent); }
+.tag.pass { background: var(--ok-soft); color: var(--ok); }
+.tag.part { background: var(--kv-soft); color: var(--kv); }
+.tag.none { background: var(--code-bg); color: var(--muted); }
+.tag.fail { background: var(--state-soft); color: var(--state); font-weight: 600; }
+
+.cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.cmp > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; min-width: 0; }
+.cmp .ours { border-top: 4px solid var(--accent); }
+.cmp .pr6 { border-top: 4px solid var(--state); }
+.cmp h3 { font-size: 1.05rem; margin-bottom: 0.5rem; }
+.cmp ul { margin: 0; padding-left: 1.1rem; font-size: 0.93rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+.note { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--ok); border-radius: 6px; padding: 0.9rem 1.1rem; font-size: 0.94rem; }
+
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.pair > div { min-width: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+
+footer { border-top: 1px solid var(--rule); margin-top: 3.5rem; background: var(--surface); }
+footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.4rem; }
+
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+
+/* This page only: a red token for "missing or refused", the feature grid, ordered lists and diagram sources. */
+:root { --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bad: #f28b82; } }
+:root[data-theme="dark"] { --bad: #f28b82; }
+ol.plain { margin: 0; padding-left: 1.4rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.fg-title { font-weight: 600; font-size: 1.02rem; }
+.fg-sub { font-size: 0.85rem; }
+.fg-legend { font-size: 0.82rem; display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 0.7rem; }
+.fgrid-fig .table-box { border: 0; }
+table.fgrid { min-width: 44rem; font-size: 0.85rem; }
+table.fgrid th { text-align: center; }
+table.fgrid td.fg { text-align: center; white-space: nowrap; border-bottom: 3px solid var(--surface); }
+.fg { color: var(--ink); border-radius: 4px; }
+span.fg { padding: 0 0.5em; font-family: var(--f-mono); font-size: 0.78rem; }
+.fg.good { background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.fg.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.fg.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.fg.na { background: color-mix(in srgb, var(--muted) 18%, transparent); }
+table.fgrid .prop { box-shadow: inset 2px 0 0 var(--kv), inset -2px 0 0 var(--kv); }
+table.fgrid th.prop { color: var(--kv); box-shadow: inset 2px 0 0 var(--kv), inset -2px 0 0 var(--kv), inset 0 2px 0 var(--kv); }
+table.fgrid tr:last-child .prop { box-shadow: inset 2px 0 0 var(--kv), inset -2px 0 0 var(--kv), inset 0 -2px 0 var(--kv); }
+pre.mermaid { background: none; padding: 0; text-align: center; font-family: var(--f-body); }
+details.src { margin-top: 0.6rem; font-size: 0.88rem; }
+details.src summary { cursor: pointer; color: var(--muted); }
+details.src pre { margin-top: 0.5rem; }
+</style>
+</head>
+
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">Persistent state &middot; landscape</p>
+    <h1>Persistent state in vLLM: a maintainer's guide to the landscape</h1>
+    <p class="lede">The proposal is the right design for sessions that keep state tokens cannot rebuild, such as streaming ASR: it keeps PR 6's small storage change and adds the nine rules the state pool showed are needed, without refusing async scheduling or CUDA graphs. Bounded sessions remain the right design for hours-long attention sessions, and the proposal neither helps nor harms them. Hybrid and full-duplex models need both at once, which no design covers yet; one turn transition with a retention policy per KV group would.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#memory">Memory</a>
+      <a href="#glance">At a glance</a>
+      <a href="#designs">Designs</a>
+      <a href="#features">Features</a>
+      <a href="#use-cases">Use cases</a>
+      <a href="#lifetime">Lifetime</a>
+      <a href="#placement">Memory placement</a>
+      <a href="#guidance">Guidance</a>
+      <a href="#checked">How this was checked</a>
+      <a href="#requirements">Requirements</a>
+      <a href="#glossary">Glossary</a>
+    </nav>
+    <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-22. Back to the <a href="../">persistent-state guide</a>.</p>
+  </div>
+</header>
+
+<main>
+
+<section id="memory">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">1 &middot; Memory</p>
+      <h2>Memory architectures and layouts</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Read this section first if you are new to vLLM's memory model. Every design in this guide uses the same GPU allocation, the KV cache. The designs differ in three things: what kind of page a session holds, who may take that page back, and what grows in host memory on every turn.</p>
+        <h3>How vLLM builds its KV cache</h3>
+        <p>At startup, core builds the KV cache in a fixed order. The diagram source is below it.</p>
+      </div>
+<figure>
+<pre class="mermaid">
+flowchart TD
+    W["Load weights"] --&gt; P["Profile one forward pass at the largest batch"]
+    P --&gt; G["Capture CUDA graphs"]
+    G --&gt; B["KV cache budget = what is left under gpu_memory_utilization"]
+    B --&gt; S["Group layers by spec: full attention, sliding window, Mamba state"]
+    S --&gt; U["Make every group's page the same byte size"]
+    U --&gt; BP["One block pool of equal pages"]
+    BP --&gt; M1["FullAttentionManager: one block per block_size tokens"]
+    BP --&gt; M2["SlidingWindowManager: frees blocks behind the window"]
+    BP --&gt; M3["MambaManager: a fixed number of pages per request"]
+    M1 --&gt; T["Per-request block table, one per group"]
+    M2 --&gt; T
+    M3 --&gt; T
+    T --&gt; R["Worker: max_num_seqs rows of per-request tables"]
+    R --&gt; K["Kernels read KV and state through the block tables"]
+</pre>
+</figure>
+<details class="src"><summary>Diagram source</summary><pre><code>flowchart TD
+    W["Load weights"] --&gt; P["Profile one forward pass at the largest batch"]
+    P --&gt; G["Capture CUDA graphs"]
+    G --&gt; B["KV cache budget = what is left under gpu_memory_utilization"]
+    B --&gt; S["Group layers by spec: full attention, sliding window, Mamba state"]
+    S --&gt; U["Make every group's page the same byte size"]
+    U --&gt; BP["One block pool of equal pages"]
+    BP --&gt; M1["FullAttentionManager: one block per block_size tokens"]
+    BP --&gt; M2["SlidingWindowManager: frees blocks behind the window"]
+    BP --&gt; M3["MambaManager: a fixed number of pages per request"]
+    M1 --&gt; T["Per-request block table, one per group"]
+    M2 --&gt; T
+    M3 --&gt; T
+    T --&gt; R["Worker: max_num_seqs rows of per-request tables"]
+    R --&gt; K["Kernels read KV and state through the block tables"]</code></pre></details>
+      <div class="col stack">
+        <ol class="plain">
+  <li><strong>Budget.</strong> Core profiles a forward pass and captures CUDA graphs, then gives the KV cache whatever memory remains (<code>vllm/v1/worker/gpu_worker.py:828-832</code> at PR 6). The KV cache is therefore sized by leftover memory, not by a configured count, unless a design overrides it.</li>
+  <li><strong>Groups.</strong> Layers with the same cache spec form a KV cache group, and each group has one manager class. A hybrid model has at least two groups, for example full attention and Mamba.</li>
+  <li><strong>One page size.</strong> All groups draw pages from one block pool, so core makes their page sizes equal: an attention group raises its block size, and a Mamba page is padded (<code>unify_kv_cache_spec_page_size</code>, <code>vllm/v1/core/kv_cache_planning.py:331</code> at PR 6).</li>
+  <li><strong>Block tables.</strong> Each request holds one block table per group, a list of page ids. Attention kernels read K and V through it (paged attention), and Mamba kernels read and write the request's state page through it.</li>
+  <li><strong>Worker rows.</strong> The model runner keeps a fixed number of per-request rows, <code>max_num_seqs</code> (<code>vllm/v1/worker/gpu/model_runner.py:243</code>). CUDA graphs capture the addresses of these buffers, so the buffers must not move while a graph that uses them exists.</li>
+</ol>
+        <h3>What a page holds</h3>
+        <p>The kind of page decides what the engine may do with it. Attention KV can be thrown away and recomputed from tokens; persistent state cannot.</p>
+      </div>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Page kind</th><th>Holds</th><th>Grows with the session?</th><th>Rebuildable from tokens?</th><th>Who may take it back</th></tr></thead>
+<tbody>
+<tr><td>Full-attention block</td><td>K and V for <code>block_size</code> tokens</td><td>yes, one block per <code>block_size</code> tokens</td><td>yes</td><td>the scheduler, by preemption; the block pool keeps freed blocks for prefix-cache hits until reused</td></tr>
+<tr><td>Sliding-window block</td><td>the same, for tokens inside the window</td><td>no, blocks behind the window are freed</td><td>yes</td><td>the manager, as the window moves; the scheduler, by preemption</td></tr>
+<tr><td>Mamba state page (upstream)</td><td>convolution and SSM state for one request</td><td>no, a fixed count per request</td><td>yes, by re-running the prompt</td><td>the scheduler, by preemption</td></tr>
+<tr><td>Persistent state page (state pool, PR 6, proposal)</td><td>encoder caches, decoder state, emission progress</td><td>no, one page per session</td><td>no</td><td>nobody until the session finishes</td></tr>
+<tr><td>Bounded-session block (<a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>)</td><td>full-attention KV inside a retained window</td><td>no, capped by <code>max_session_tokens</code></td><td>only from the retained window</td><td>the session itself, which evicts whole old blocks at a chunk boundary (<code>vllm/v1/core/kv_cache_manager.py:705-735</code> at <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>)</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p>Upstream MambaManager does not zero a new page (<code>zeroes_new_blocks = False</code>, <code>vllm/v1/core/single_type_kv_cache_manager.py:1939</code> at PR 6). That is harmless when a prefill overwrites the state; for a persistent state page it is gap B7, which PF-3 closes.</p>
+        <h3>Where each design puts a session</h3>
+      </div>
+<figure>
+<svg viewBox="0 0 760 520" width="100%" role="img" aria-label="One session in the KV cache under each design" font-size="13" xmlns="http://www.w3.org/2000/svg">
+<text x="24" y="28" font-size="15" font-weight="600" style="fill:var(--ink)">One session in the KV cache under each design</text>
+<text x="24" y="48" font-size="11.5" style="fill:var(--muted)">Each square is one page of the shared block pool held by the session after several turns</text>
+<rect x="24" y="66" width="14" height="14" rx="2" fill-opacity="0.75" style="fill:var(--kv)"/>
+<text x="44" y="77" font-size="11.5" style="fill:var(--muted)">attention block</text>
+<rect x="150" y="66" width="14" height="14" rx="2" style="fill:var(--state)"/>
+<text x="170" y="77" font-size="11.5" style="fill:var(--muted)">persistent state page</text>
+<rect x="310" y="66" width="14" height="14" rx="2" style="fill:var(--accent)"/>
+<text x="330" y="77" font-size="11.5" style="fill:var(--muted)">pinned block</text>
+<rect x="426" y="66" width="14" height="14" rx="2" stroke-width="1.25" style="fill:none;stroke:var(--rule)"/>
+<text x="446" y="77" font-size="11.5" style="fill:var(--muted)">evicted, back in the pool</text>
+<rect x="604" y="66" width="14" height="14" rx="2" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<text x="624" y="77" font-size="11.5" style="fill:var(--muted)">reserved, unused</text>
+<line x1="24" x2="736" y1="96" y2="96" stroke-width="1" style="stroke:var(--muted)"/>
+<text x="24" y="126" font-weight="600" style="fill:var(--ink)">Upstream streaming update</text>
+<text x="24" y="144" font-size="11.5" style="fill:var(--muted)">main: attention blocks only</text>
+<rect x="300" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="328" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="356" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="384" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="412" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="440" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="468" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="496" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="524" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="552" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="580" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="608" y="116" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<text x="640" y="132" font-size="11.5" style="fill:var(--muted)">grows each turn</text>
+<text x="300" y="160" font-size="11.5" style="fill:var(--muted)">Preemption may take every block; the engine recomputes them from tokens</text>
+<text x="24" y="212" font-weight="600" style="fill:var(--ink)">State pool</text>
+<text x="24" y="230" font-size="11.5" style="fill:var(--muted)">cache = max_num_seqs + 1 pages</text>
+<rect x="300" y="202" width="24" height="22" rx="3" style="fill:var(--state)"/>
+<text x="336" y="218" font-size="11.5" style="fill:var(--muted)">one page, never grows</text>
+<text x="300" y="246" font-size="11.5" style="fill:var(--muted)">Only finish releases the page; its own StateScheduler binds and parks it</text>
+<text x="24" y="298" font-weight="600" style="fill:var(--ink)">PR 6 and the proposal</text>
+<text x="24" y="316" font-size="11.5" style="fill:var(--muted)">MambaSpec group, recomputable=False</text>
+<rect x="300" y="288" width="24" height="22" rx="3" style="fill:var(--state)"/>
+<rect x="328" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="356" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="384" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="412" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="440" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="468" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="496" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="524" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<rect x="552" y="288" width="24" height="22" rx="3" stroke-width="1.25" stroke-dasharray="3 3" style="fill:none;stroke:var(--kv)"/>
+<text x="588" y="304" font-size="11.5" style="fill:var(--muted)">hybrid model only</text>
+<text x="300" y="332" font-size="11.5" style="fill:var(--muted)">No preemption; a hybrid model's attention is reserved at its largest</text>
+<text x="24" y="384" font-weight="600" style="fill:var(--ink)">Bounded sessions (#53879)</text>
+<text x="24" y="402" font-size="11.5" style="fill:var(--muted)">one full-attention group, a token window</text>
+<rect x="300" y="374" width="24" height="22" rx="3" style="fill:var(--accent)"/>
+<rect x="328" y="374" width="24" height="22" rx="3" style="fill:var(--accent)"/>
+<rect x="356" y="374" width="24" height="22" rx="3" stroke-width="1.25" style="fill:none;stroke:var(--rule)"/>
+<rect x="384" y="374" width="24" height="22" rx="3" stroke-width="1.25" style="fill:none;stroke:var(--rule)"/>
+<rect x="412" y="374" width="24" height="22" rx="3" stroke-width="1.25" style="fill:none;stroke:var(--rule)"/>
+<rect x="440" y="374" width="24" height="22" rx="3" stroke-width="1.25" style="fill:none;stroke:var(--rule)"/>
+<rect x="468" y="374" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="496" y="374" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="524" y="374" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="552" y="374" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="580" y="374" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="608" y="374" width="24" height="22" rx="3" stroke-width="1.5" style="fill:var(--kv);stroke:var(--ink)"/>
+<rect x="636" y="374" width="24" height="22" rx="3" stroke-width="1.5" style="fill:var(--kv);stroke:var(--ink)"/>
+<text x="300" y="366" font-size="11" style="fill:var(--muted)">first turn</text>
+<text x="356" y="366" font-size="11" style="fill:var(--muted)">evicted segments</text>
+<text x="468" y="366" font-size="11" style="fill:var(--muted)">retained window</text>
+<text x="608" y="366" font-size="11" style="fill:var(--muted)">new chunk</text>
+<text x="300" y="418" font-size="11.5" style="fill:var(--muted)">The session frees whole old blocks; positions keep counting through an offset</text>
+<text x="24" y="470" font-weight="600" style="fill:var(--ink)">Resident sessions (#68539)</text>
+<text x="24" y="488" font-size="11.5" style="fill:var(--muted)">attention blocks; worker row kept</text>
+<rect x="300" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="328" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="356" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="384" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="412" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="440" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="468" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="496" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="524" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="552" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="580" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<rect x="608" y="460" width="24" height="22" rx="3" fill-opacity="0.75" style="fill:var(--kv)"/>
+<text x="640" y="476" font-size="11.5" style="fill:var(--muted)">grows each turn</text>
+<text x="300" y="504" font-size="11.5" style="fill:var(--muted)">Same pages as main; a chunk resumes without reinstalling the worker row</text>
+</svg>
+<figcaption>pages one session holds · 5 layouts, code at the heads under How this was checked</figcaption>
+</figure>
+      <div class="col stack">
+        <p>Read each row as one session after several turns. Attention designs hold more pages as the session grows; state designs hold one page for the session's life. Bounded sessions are the only design that gives pages back while the session lives.</p>
+      </div>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Design</th><th>Where the session's state lives</th><th>How the cache is sized</th><th>Attention KV</th><th>Who may reclaim the session's pages</th><th>Host memory per turn</th></tr></thead>
+<tbody>
+<tr><td>Upstream streaming update (main)</td><td>attention blocks only</td><td>leftover memory</td><td>grows with the folded prompt</td><td>preemption, finish</td><td>the prompt grows every turn</td></tr>
+<tr><td>State pool</td><td>a <code>PersistentStateSpec</code> group with its own manager and <code>StateScheduler</code></td><td>exactly <code>max_num_seqs</code> + 1 pages, the extra one the null page (<code>vllm/v1/core/kv_cache_planning.py:1663-1695</code> at dc3d58ccc5); one engine worker only (<code>:1500</code>)</td><td>none</td><td>finish only</td><td>scheduler copy bounded; output processor still grows</td></tr>
+<tr><td>State layer (PR 6)</td><td>a <code>MambaSpec</code> group with <code>recomputable=False</code></td><td>leftover memory (6,439 pages on the A40 PoC)</td><td>any attention group is reserved at its largest per active request (<code>vllm/v1/core/sched/scheduler.py:146-162</code> at PR 6)</td><td>finish only; preemption is ruled out</td><td>four host structures grow</td></tr>
+<tr><td>The proposal</td><td>as PR 6</td><td>as PR 6, with admission that counts held pages and rows (PF-7)</td><td>as PR 6</td><td>finish, abort or an idle deadline, with ordered reuse (PF-3, PF-7)</td><td>bounded to the new input in every layer (PF-6)</td></tr>
+<tr><td>Bounded sessions (<a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>)</td><td>attention blocks only</td><td>leftover memory</td><td>a window: pinned first turn, then the newest segments up to <code>max_session_tokens</code></td><td>the session evicts old blocks; preemption</td><td>bounded by the window</td></tr>
+<tr><td>Resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>)</td><td>attention blocks only</td><td>leftover memory</td><td>grows with the session</td><td>preemption, finish</td><td>the prompt grows; the worker row is kept between chunks</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p>Three differences carry most of the consequences in the rest of this guide:</p>
+        <ul class="plain">
+  <li><strong>Who may take a page back.</strong> Only attention pages may be preempted or evicted. Once a group holds state that tokens cannot rebuild, PR 6 rules out preemption for the whole request, including its attention blocks.</li>
+  <li><strong>Configured or leftover size.</strong> The state pool fixes the cache at <code>max_num_seqs</code> + 1 pages and fails at startup if they do not fit. PR 6 and the proposal take all leftover memory, so admission, not sizing, must stop over-subscription.</li>
+  <li><strong>Host growth.</strong> GPU cost per session is constant in the state designs. What grows is host history, and only the proposal and bounded sessions bound it.</li>
+</ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="glance">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">2 &middot; At a glance</p>
+      <h2>At a glance</h2>
+    </div>
+    <div class="stack-lg">
+<figure>
+<svg viewBox="0 0 760 396" width="100%" role="img" aria-label="The proposal is PR 6 storage plus lifecycle rules" font-size="13" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="glance-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+<text x="24" y="28" font-size="15" font-weight="600" style="fill:var(--ink)">The proposal is PR 6's storage plus lifecycle rules</text>
+<text x="24" y="58" font-size="11.5" style="fill:var(--muted)">Lifecycle: how a session moves between inputs</text>
+<text x="24" y="198" font-size="11.5" style="fill:var(--muted)">Storage</text>
+<g fill="none" stroke-width="1.25" style="stroke:var(--muted)">
+<path d="M107 158V208" marker-end="url(#glance-arrow)"/>
+<path d="M289 158V208" marker-end="url(#glance-arrow)"/>
+<path d="M471 158V208" marker-end="url(#glance-arrow)"/>
+<path d="M653 158V208" marker-end="url(#glance-arrow)"/>
+</g>
+<rect x="24" y="70" width="166" height="88" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="36" y="94" font-weight="600" style="fill:var(--ink)">Fold path</text>
+<text x="36" y="110" font-size="11.5" style="fill:var(--muted)">upstream default:</text>
+<text x="36" y="126" font-size="11.5" style="fill:var(--muted)">append input, reinstall</text>
+<text x="36" y="142" font-size="11.5" style="fill:var(--muted)">the row; history grows</text>
+<rect x="206" y="70" width="166" height="88" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="218" y="94" font-weight="600" style="fill:var(--ink)">Resident sessions</text>
+<text x="218" y="110" font-size="11.5" style="fill:var(--muted)">#68539</text>
+<text x="218" y="126" font-size="11.5" style="fill:var(--muted)">resume in place when</text>
+<text x="218" y="142" font-size="11.5" style="fill:var(--muted)">output budget reached</text>
+<rect x="388" y="70" width="166" height="88" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="400" y="94" font-weight="600" style="fill:var(--ink)">Bounded sessions</text>
+<text x="400" y="110" font-size="11.5" style="fill:var(--muted)">#53879</text>
+<text x="400" y="126" font-size="11.5" style="fill:var(--muted)">evict old KV, compact,</text>
+<text x="400" y="142" font-size="11.5" style="fill:var(--muted)">logical position offset</text>
+<rect x="570" y="70" width="166" height="88" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--kv);stroke:var(--kv)"/>
+<text x="582" y="94" font-weight="600" style="fill:var(--ink)">Proposal rules</text>
+<text x="582" y="110" font-size="11.5" style="fill:var(--ink)">PF-1 to PF-9</text>
+<text x="582" y="126" font-size="11.5" style="fill:var(--ink)">turn end, compaction,</text>
+<text x="582" y="142" font-size="11.5" style="fill:var(--ink)">admission, failure</text>
+<rect x="24" y="208" width="530" height="88" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="36" y="232" font-weight="600" style="fill:var(--ink)">Attention KV blocks</text>
+<text x="36" y="248" font-size="11.5" style="fill:var(--muted)">Rebuildable from tokens: the engine may preempt, recompute and prefix-share them.</text>
+<text x="36" y="264" font-size="11.5" style="fill:var(--muted)">Grows with session length unless evicted (bounded sessions) or trimmed.</text>
+<rect x="570" y="208" width="166" height="88" rx="8" fill-opacity="0.12" stroke-width="2" style="fill:var(--kv);stroke:var(--kv)"/>
+<text x="582" y="232" font-weight="600" style="fill:var(--ink)">State layer, PR 6</text>
+<text x="582" y="248" font-size="11.5" style="fill:var(--ink)">Mamba KV group,</text>
+<text x="582" y="264" font-size="11.5" style="fill:var(--ink)">not rebuildable,</text>
+<text x="582" y="280" font-size="11.5" style="fill:var(--ink)">one page per session</text>
+<rect x="24" y="316" width="712" height="56" rx="8" fill-opacity="1" stroke-width="1.25" stroke-dasharray="5 4" style="fill:none;stroke:var(--muted)"/>
+<text x="36" y="340" font-weight="600" style="fill:var(--ink)">State pool #67374, being replaced</text>
+<text x="36" y="358" font-size="11.5" style="fill:var(--muted)">Its own pool and scheduler do both jobs, storage and lifecycle; it refuses async scheduling and CUDA graphs.</text>
+</svg>
+<figcaption>lifecycle designs over storage designs · 5 designs</figcaption>
+</figure>
+      <div class="col stack">
+        <p>Read it top to bottom: a lifecycle design decides what happens between inputs, and a storage design decides where the session's data lives. Three lifecycle designs sit on rebuildable attention KV; the proposal's rules sit on PR 6's state layer. The state pool does both jobs in one separate component.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="designs">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">3 &middot; Designs</p>
+      <h2>The designs in plain terms</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Five designs touch long-lived sessions in vLLM. Two decide where state lives; three decide how a session moves from one input to the next. They are not rivals in every case: they answer different questions.</p>
+        <p><strong>The problem they share.</strong> vLLM's KV cache is rebuildable: if the engine throws a request's blocks away (preemption), it can recompute them from the tokens. A streaming speech model keeps something else per session (encoder caches, decoder state, emission progress) that no token sequence can rebuild. Losing it, or letting another session read it, breaks the transcript. A long session also accumulates history, and every design must stop that from growing without bound.</p>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>Design</th><th>One-line idea</th><th>Decides where state lives?</th><th>Decides how a session resumes?</th></tr></thead>
+<tbody>
+<tr><td>State pool (<a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, with <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a> and <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a>)</td><td>A separate pool of state pages with its own scheduler that binds, parks and retires them</td><td>yes</td><td>yes: replaces the prompt on every input</td></tr>
+<tr><td>State layer (<a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, "PR 6")</td><td>Put the state in a Mamba-style KV cache group that the normal allocator owns, and mark it not rebuildable</td><td>yes</td><td>no: uses upstream's streaming-session update</td></tr>
+<tr><td>The proposal (PF-1 to PF-9)</td><td>PR 6, plus nine rules that make that group safe for long sessions</td><td>yes, via PR 6</td><td>yes: rules for turn end, compaction, admission, failure</td></tr>
+<tr><td>Bounded sessions (<a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>)</td><td>Keep hours-long attention sessions within a token budget by evicting old KV and re-prefilling</td><td>no: attention KV only</td><td>yes: eviction, compaction, position offset</td></tr>
+<tr><td>Resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>)</td><td>Skip the per-chunk reinstall: a session with a live worker row resumes in place</td><td>no: attention KV only</td><td>yes: in place when the output budget was reached</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p><strong>Where the proposal sits.</strong> It is not a sixth mechanism. It takes PR 6's storage (the smallest core change, +34 / −4 lines under vllm/) and adds the lifecycle rules the state pool proved necessary: admission, idle reclaim, per-request failure, page initialization, release ordering, a turn-end rule and bounded history. It borrows compaction and the logical position offset from bounded sessions, and the in-place resume idea from resident sessions.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">4 &middot; Features</p>
+      <h2>Feature comparison for maintainers</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>The proposal is a different trade from the state pool, not a strict superset: it aims for the pool's safety guarantees while keeping async scheduling, CUDA graphs and the ordinary scheduler. Its column is a design; every other column is code read at the heads named under How this was checked.</p>
+      </div>
+<figure class="fgrid-fig">
+<p class="fg-title">The proposal aims for the state pool's guarantees without its refusals</p>
+<p class="muted fg-sub">Green works, amber partial or untested, red missing or refused. The proposal is a design, not code.</p>
+<p class="fg-legend"><span class="fg good">works</span> <span class="fg warn">partial or untested</span> <span class="fg bad">missing or refused</span> <span class="fg na">neutral</span></p>
+<div class="table-box"><table class="fgrid">
+<thead><tr><th>Feature</th><th class="">State pool</th><th class="">PR 6 as-is</th><th class="prop">Proposal</th><th class="">Bounded</th><th class="">Resident</th></tr></thead><tbody>
+<tr><td class="name">Resume after a turn</td><td class="fg good" title="replace prompt: works">replace prompt</td><td class="fg warn" title="fold, regrows: partial">fold, regrows</td><td class="fg warn prop" title="undecided: partial">undecided</td><td class="fg good" title="fold + retain: works">fold + retain</td><td class="fg good" title="in place*: works">in place*</td></tr>
+<tr><td class="name">History bounded</td><td class="fg warn" title="scheduler only: partial">scheduler only</td><td class="fg bad" title="grows: missing or refused">grows</td><td class="fg good prop" title="every layer: works">every layer</td><td class="fg warn" title="yes; queue not: partial">yes; queue not</td><td class="fg warn" title="transfer only: partial">transfer only</td></tr>
+<tr><td class="name">Positions across turns</td><td class="fg warn" title="reset per input: partial">reset per input</td><td class="fg warn" title="absolute: partial">absolute</td><td class="fg good prop" title="logical offset: works">logical offset</td><td class="fg good" title="logical offset: works">logical offset</td><td class="fg warn" title="absolute: partial">absolute</td></tr>
+<tr><td class="name">Admission at open</td><td class="fg good" title="refuse at open: works">refuse at open</td><td class="fg bad" title="B2 bug: missing or refused">B2 bug</td><td class="fg good prop" title="refuse at open: works">refuse at open</td><td class="fg warn" title="budget check: partial">budget check</td><td class="fg warn" title="ordinary: partial">ordinary</td></tr>
+<tr><td class="name">Idle reclaim</td><td class="fg good" title="3 deadlines: works">3 deadlines</td><td class="fg bad" title="none: missing or refused">none</td><td class="fg good prop" title="3 + abort: works">3 + abort</td><td class="fg warn" title="HTTP reaper: partial">HTTP reaper</td><td class="fg bad" title="none: missing or refused">none</td></tr>
+<tr><td class="name">One session fails</td><td class="fg good" title="model reports: works">model reports</td><td class="fg bad" title="engine dies: missing or refused">engine dies</td><td class="fg good prop" title="model reports: works">model reports</td><td class="fg warn" title="validation only: partial">validation only</td><td class="fg warn" title="preprocessing: partial">preprocessing</td></tr>
+<tr><td class="name">Preemption</td><td class="fg good" title="fails request: works">fails request</td><td class="fg bad" title="raises: missing or refused">raises</td><td class="fg good prop" title="fails request: works">fails request</td><td class="fg good" title="replay: works">replay</td><td class="fg good" title="replay: works">replay</td></tr>
+<tr><td class="name">Prefix caching</td><td class="fg na" title="refused: neutral">refused</td><td class="fg na" title="Mamba limits: neutral">Mamba limits</td><td class="fg na prop" title="off per request: neutral">off per request</td><td class="fg na" title="off per request: neutral">off per request</td><td class="fg good" title="ordinary: works">ordinary</td></tr>
+<tr><td class="name">Async scheduling</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="on; EOS bug: partial">on; EOS bug</td><td class="fg good prop" title="with barrier: works">with barrier</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg good" title="allowed: works">allowed</td></tr>
+<tr><td class="name">CUDA graphs</td><td class="fg warn" title="model only: partial">model only</td><td class="fg good" title="available: works">available</td><td class="fg good prop" title="available: works">available</td><td class="fg bad" title="eager only: missing or refused">eager only</td><td class="fg good" title="available: works">available</td></tr>
+<tr><td class="name">TP, PP, DP</td><td class="fg bad" title="all must be 1: missing or refused">all must be 1</td><td class="fg warn" title="untested: partial">untested</td><td class="fg warn prop" title="TP replicated: partial">TP replicated</td><td class="fg warn" title="TP only: partial">TP only</td><td class="fg warn" title="no PP in place: partial">no PP in place</td></tr>
+<tr><td class="name">Speculative decoding</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="fold only: partial">fold only</td></tr>
+<tr><td class="name">KV connectors</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="unproven: partial">unproven</td></tr>
+<tr><td class="name">Core lines, vllm/</td><td class="fg na" title="+1,493: neutral">+1,493</td><td class="fg na" title="+34: neutral">+34</td><td class="fg na prop" title="not built: neutral">not built</td><td class="fg na" title="+330, +1,895: neutral">+330, +1,895</td><td class="fg na" title="+138: neutral">+138</td></tr>
+<tr><td class="name">Evidence</td><td class="fg good" title="A40, full suite: works">A40, full suite</td><td class="fg warn" title="1 A40 PoC: partial">1 A40 PoC</td><td class="fg bad prop" title="none yet: missing or refused">none yet</td><td class="fg warn" title="CPU + Qwen GPU: partial">CPU + Qwen GPU</td><td class="fg warn" title="1 H100 run: partial">1 H100 run</td></tr>
+</tbody></table></div>
+<p class="muted fg-sub">* in place only for tokenless updates that used up their output budget; otherwise the fold path.</p>
+<figcaption>code read at the heads under How this was checked · 5 designs × 15 features</figcaption>
+</figure>
+      <div class="col stack">
+        <p>Four rows carry the decision:</p>
+        <ul class="plain">
+  <li><strong>Async scheduling and CUDA graphs.</strong> The state pool refuses async scheduling for everyone, and runner graphs. PR 6 allows both but writes a stop token into state under async (G5). The proposal keeps both with a per-request barrier, so only rows with state lose overlap.</li>
+  <li><strong>History bounded.</strong> The state pool replaces the prompt in the scheduler, but its output processor still appends prompt ids for requests that skip stream admission (<code>vllm/v1/engine/output_processor.py:311</code> at the pool's head). PR 6 grows the prompt every turn. The proposal requires a bound in every layer.</li>
+  <li><strong>One session fails.</strong> On PR 6 a failing row raises and the engine stops for every client. The state pool and the proposal let the model report the failed request, which finishes alone.</li>
+  <li><strong>Preemption.</strong> Attention designs replay; state cannot be replayed, so the state pool and the proposal end the request instead, where PR 6 raises.</li>
+</ul>
+        <p>The proposal also relaxes one state-pool guarantee on purpose: the pool ends a session on every stop but EOS (<code>vllm/v1/core/sched/state_scheduler.py:307</code>), and PF-5 lets a model declare a length stop resumable. That is safe only if the watermark holds.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="use-cases">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">5 &middot; Use cases</p>
+      <h2>Thought experiments: the proposal applied to each use case</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Two facts decide which design a use case needs: whether it keeps state that tokens cannot rebuild, and whether its sessions outgrow max_model_len so that attention KV must be evicted. The proposal answers the first and refuses the second; bounded sessions answer the second and refuse the first. Nobody yet answers both.</p>
+      </div>
+<figure>
+<svg viewBox="0 0 760 448" width="100%" role="img" aria-label="The proposal fits sessions whose state cannot be rebuilt and whose attention KV need not be evicted" font-size="13" xmlns="http://www.w3.org/2000/svg">
+<text x="24" y="28" font-size="15" font-weight="600" style="fill:var(--ink)">The proposal fits one quadrant; one quadrant has no design yet</text>
+<text x="24" y="48" font-size="11.5" style="fill:var(--muted)">Six use cases placed by the two facts that decide their design</text>
+<text x="288" y="76" font-size="11.5" font-weight="600" text-anchor="middle" style="fill:var(--muted)">Fits within max_model_len</text>
+<text x="592" y="76" font-size="11.5" font-weight="600" text-anchor="middle" style="fill:var(--muted)">Attention KV must be evicted</text>
+<text font-size="11.5" font-weight="600" style="fill:var(--muted)"><tspan x="24" y="160">Keeps state</tspan><tspan x="24" y="176">tokens cannot</tspan><tspan x="24" y="192">rebuild</tspan></text>
+<text font-size="11.5" font-weight="600" style="fill:var(--muted)"><tspan x="24" y="344">No such</tspan><tspan x="24" y="360">state</tspan></text>
+<rect x="144" y="88" width="288" height="160" rx="8" fill-opacity="0.1" stroke-width="2" style="fill:var(--kv);stroke:var(--kv)"/>
+<text x="156" y="112" font-weight="600" style="fill:var(--ink)">The proposal fits</text>
+<rect x="156" y="128" width="188" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="168" y="145" style="fill:var(--ink)">Streaming ASR (Nemotron)</text>
+<text x="156" y="212" font-size="11.5" style="fill:var(--muted)">First consumer; all nine requirements</text>
+<text x="156" y="228" font-size="11.5" style="fill:var(--muted)">apply. Five gaps remain on PR 6.</text>
+<rect x="448" y="88" width="288" height="160" rx="8" fill-opacity="0.1" stroke-width="2" style="fill:var(--bad);stroke:var(--bad)"/>
+<text x="460" y="112" font-weight="600" style="fill:var(--ink)">Gap: no design covers it yet</text>
+<rect x="460" y="128" width="202" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="472" y="145" style="fill:var(--ink)">Hybrid model, long session</text>
+<rect x="460" y="160" width="202" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="472" y="177" style="fill:var(--ink)">Full-duplex speech (Moshi)</text>
+<text x="460" y="212" font-size="11.5" style="fill:var(--muted)">The page must stay while attention KV</text>
+<text x="460" y="228" font-size="11.5" style="fill:var(--muted)">must go: needs per-group lifetime rules.</text>
+<rect x="144" y="264" width="288" height="160" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="156" y="288" font-weight="600" style="fill:var(--ink)">Upstream, untouched</text>
+<rect x="156" y="304" width="111" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="168" y="321" style="fill:var(--ink)">Ordinary chat</text>
+<rect x="156" y="336" width="209" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="168" y="353" style="fill:var(--ink)">Resident sessions (Voxtral)</text>
+<text x="156" y="388" font-size="11.5" style="fill:var(--muted)">Voxtral may opt in to PF-1, trading</text>
+<text x="156" y="404" font-size="11.5" style="fill:var(--muted)">preemption for O(1) host memory.</text>
+<rect x="448" y="264" width="288" height="160" rx="8" fill-opacity="1" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="460" y="288" font-weight="600" style="fill:var(--ink)">Bounded sessions (#53879)</text>
+<rect x="460" y="304" width="195" height="24" rx="12" stroke-width="1" style="fill:none;stroke:var(--muted)"/>
+<text x="472" y="321" style="fill:var(--ink)">Hours-long video and text</text>
+<text x="460" y="388" font-size="11.5" style="fill:var(--muted)">Its own design is complete. The proposal</text>
+<text x="460" y="404" font-size="11.5" style="fill:var(--muted)">borrows its compaction and offset.</text>
+</svg>
+<figcaption>fit map · 6 use cases on 2 deciding facts</figcaption>
+</figure>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Use case</th><th>What it needs</th><th>What the proposal gives</th><th>What is missing</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>Streaming ASR (Nemotron plugin)</td><td>One fixed page per session; park at EOS; O(1) resume; refuse at open when full; one bad row must not kill the engine</td><td>Everything the state pool gave, plus a path to async scheduling (watermark) and core CUDA graphs</td><td>Code on PR 6 for admission (B4), per-row failure (B1), page zeroing (B7); in-place or fold resume undecided</td><td>fits</td></tr>
+<tr><td>Bounded sessions (<a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>)</td><td>Evict old attention KV while the request lives, compact history, keep positions counting, re-prefill before the horizon</td><td>Core admission and idle deadlines it lacks today</td><td>A contract for KV that is rebuildable from a retained window; PF-2 forbids exactly the eviction it does</td><td>neighbour, not a client</td></tr>
+<tr><td>Resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>, Voxtral)</td><td>One token per 80 ms chunk; resume in place without reinstalling the worker row</td><td>Length-stop parking, compaction, admission</td><td>A requirement for in-place resume, which is <a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>'s whole value</td><td>fits with an addition</td></tr>
+<tr><td>Hybrid model, long session</td><td>Keep the Mamba page; evict or re-prefill attention KV past the horizon</td><td>A safe end at the position horizon</td><td>Per-group lifetime rules; PR 6 also reserves full-length attention KV for every active request</td><td>does not fit past max_model_len</td></tr>
+<tr><td>Ordinary chat request</td><td>Nothing</td><td>Nothing, by design</td><td>PF-7 and PF-9 must be keyed on a PF-1 declaration so they are no-ops here</td><td>fits (untouched)</td></tr>
+<tr><td>Full-duplex speech (Moshi)</td><td>Frames both ways forever; codec state that cannot be rebuilt beside growing attention KV; no EOS</td><td>Page lifetime, admission, failure isolation</td><td>A continuous-input mode (a frame is a step, no park), in-place resume, input backpressure, attention eviction</td><td>does not fit open-ended</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p><strong>Why bounded sessions are a neighbour.</strong> The proposal knows two kinds of memory: ordinary rebuildable KV, and state that must never be evicted or recomputed. Bounded-session KV is a third kind: rebuildable from the retained window, and evicted on purpose. Its code refuses any layout but one full-attention group (<code>vllm/v1/streaming/session.py:120-123</code> at <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>), so a state group never reaches it, and the proposal neither helps nor harms it.</p>
+        <p><strong>Why resident sessions need one more requirement.</strong> Voxtral's turns end on a length stop, so under PF-5 Voxtral must declare that stop resumable, and the watermark then does real work under async scheduling. But the proposal leaves the resume path open (PF-6, in place or fold), and <a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>'s whole value is keeping the worker row (<code>vllm/v1/core/sched/scheduler.py:2010-2024</code> at <a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>).</p>
+        <p><strong>Why hybrid and duplex fall in the gap.</strong> At PR 6's head, one not-rebuildable group makes the whole request unpreemptable, and core reserves each active request's largest footprint across every group (<code>vllm/v1/core/sched/scheduler.py:146-162</code> at PR 6). For a hybrid model that means full-length attention KV per slot. Continuing past the horizon needs attention eviction while the page stays, which is a non-goal today.</p>
+        <p><strong>The single biggest weakness.</strong> One axis and one lifetime rule: declared state is never evicted, everything else is ordinary KV. Three of the six cases keep attention KV that must be evicted beside a page that must not be. The fix the researchers point to is per-group retention, described under Guidance.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="lifetime">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">6 &middot; Lifetime</p>
+      <h2>Lifetime of a session</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>A streaming session is one engine request that parks between inputs. On PR 6 only its state page is constant; every resume re-sends the whole request to the worker. The proposal's rules attach at six points, marked PF in the diagram. The diagram source is below it.</p>
+      </div>
+<figure>
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant F as Frontend /v1/realtime
+    participant A as AsyncLLM and output processor
+    participant S as Scheduler
+    participant K as KV cache manager (MambaManager)
+    participant W as Worker and model
+    C-&gt;&gt;F: open session
+    Note over F,S: PF-7: admit or refuse here (today nothing is counted)
+    C-&gt;&gt;F: append audio, commit
+    F-&gt;&gt;A: generate(prompt = async stream of inputs)
+    A-&gt;&gt;S: add_request (first input)
+    S-&gt;&gt;K: allocate one page
+    Note over K: PF-3: initialize the page (today not zeroed)
+    S-&gt;&gt;W: new request: page id, tokens, audio features
+    W-&gt;&gt;W: forward reads and writes the page
+    Note over W: PF-4: no write after a stop (async today writes it)
+    W--&gt;&gt;S: sampled token
+    S--&gt;&gt;A: output
+    A--&gt;&gt;F: transcription delta
+    F--&gt;&gt;C: delta
+    S-&gt;&gt;S: stop at EOS, park (page and worker row kept)
+    Note over S: PF-5: park only at a resumable stop
+    C-&gt;&gt;F: next audio
+    F-&gt;&gt;A: next input
+    A-&gt;&gt;S: add_request (resumable update)
+    S-&gt;&gt;S: fold input into the request, status WAITING
+    Note over S: PF-6: compact history, PF-7: still count the row
+    S-&gt;&gt;W: re-send the whole request, worker removes and re-adds the row
+    Note over W: same page, so the state continues
+    C-&gt;&gt;F: close or disconnect
+    F-&gt;&gt;A: abort
+    A-&gt;&gt;S: finish (aborted)
+    S-&gt;&gt;K: free page
+    Note over K: PF-3: reuse only after old accesses are ordered
+</pre>
+</figure>
+<details class="src"><summary>Diagram source</summary><pre><code>sequenceDiagram
+    autonumber
+    participant C as Client
+    participant F as Frontend /v1/realtime
+    participant A as AsyncLLM and output processor
+    participant S as Scheduler
+    participant K as KV cache manager (MambaManager)
+    participant W as Worker and model
+    C-&gt;&gt;F: open session
+    Note over F,S: PF-7: admit or refuse here (today nothing is counted)
+    C-&gt;&gt;F: append audio, commit
+    F-&gt;&gt;A: generate(prompt = async stream of inputs)
+    A-&gt;&gt;S: add_request (first input)
+    S-&gt;&gt;K: allocate one page
+    Note over K: PF-3: initialize the page (today not zeroed)
+    S-&gt;&gt;W: new request: page id, tokens, audio features
+    W-&gt;&gt;W: forward reads and writes the page
+    Note over W: PF-4: no write after a stop (async today writes it)
+    W--&gt;&gt;S: sampled token
+    S--&gt;&gt;A: output
+    A--&gt;&gt;F: transcription delta
+    F--&gt;&gt;C: delta
+    S-&gt;&gt;S: stop at EOS, park (page and worker row kept)
+    Note over S: PF-5: park only at a resumable stop
+    C-&gt;&gt;F: next audio
+    F-&gt;&gt;A: next input
+    A-&gt;&gt;S: add_request (resumable update)
+    S-&gt;&gt;S: fold input into the request, status WAITING
+    Note over S: PF-6: compact history, PF-7: still count the row
+    S-&gt;&gt;W: re-send the whole request, worker removes and re-adds the row
+    Note over W: same page, so the state continues
+    C-&gt;&gt;F: close or disconnect
+    F-&gt;&gt;A: abort
+    A-&gt;&gt;S: finish (aborted)
+    S-&gt;&gt;K: free page
+    Note over K: PF-3: reuse only after old accesses are ordered</code></pre></details>
+      <div class="table-box">
+<table>
+<thead><tr><th>Phase</th><th>What PR 6 does</th><th>What the proposal adds</th><th>Code at PR 6</th></tr></thead>
+<tbody>
+<tr><td>Open</td><td>Accepts the socket; no engine request yet</td><td>Admission counts pages and rows, refuses with a reason (PF-7)</td><td><code>vllm/entrypoints/speech_to_text/realtime/connection.py:59-66</code></td></tr>
+<tr><td>First input</td><td>MambaManager allocates one page, not zeroed</td><td>Page initialized before first read (PF-3)</td><td><code>vllm/v1/core/single_type_kv_cache_manager.py:1937-1985</code></td></tr>
+<tr><td>Turn</td><td>Forward writes the page on the runner stream; any exception stops the engine</td><td>No write past a stop (PF-4); a bad row fails alone (PF-8)</td><td><code>vllm/v1/engine/core.py:1769-1775</code></td></tr>
+<tr><td>Park</td><td>Any stop parks, length included; page and worker row kept</td><td>Park only at a declared resumable stop (PF-5)</td><td><code>vllm/v1/core/sched/scheduler.py:2956-2980</code></td></tr>
+<tr><td>Resume</td><td>Input and kept output folded into the prompt; whole request re-sent</td><td>Compact history in every layer (PF-6); count the held row (PF-7)</td><td><code>vllm/v1/core/sched/scheduler.py:1990-2047</code>, <code>:1676-1686</code></td></tr>
+<tr><td>Idle</td><td>Nothing reclaims a parked page</td><td>Never-fed, parked-idle and draining deadlines (PF-7)</td><td>none</td></tr>
+<tr><td>Close</td><td>Abort frees the page at once, no fence, no zeroing</td><td>Ordered reuse on every finish path (PF-3)</td><td><code>vllm/v1/core/sched/scheduler.py:3201-3250</code></td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p><strong>Three things a maintainer may not expect, all read in code at PR 6's head.</strong></p>
+        <ol class="plain">
+  <li><strong>A resumed session is invisible to admission.</strong> The fold sets the request to WAITING and decrements the parked count (<code>scheduler.py:2041-2043</code>), but the worker keeps its row until finish or preemption (<code>vllm/v1/worker/gpu/model_runner.py:1278-1291</code>). One skipped step lets admission take a new request and the worker's free-row assert fails. This is upstream bug B2, fixed on branch <code>0a09c28165</code>.</li>
+  <li><strong>Every turn is a new request to the worker.</strong> The scheduler re-sends a resumed request in full, and the runner removes and re-adds its row (<code>model_runner.py:1313-1316</code>). Only the page stays constant.</li>
+  <li><strong>Sleep can silently zero parked state.</strong> A <code>keep</code> pause retains requests (<code>vllm/v1/engine/core.py:1055</code>); sleep releases the cache's physical pages, and wake maps fresh zeroed pages (<code>vllm/v1/worker/gpu_worker.py:364-368</code>, <code>:393-396</code>). The scheduler still believes the pages hold state, so the model continues from zeros. Each link is verified; the end-to-end case was not run. PF-2 forbids sleep while state is held.</li>
+</ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="placement">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">7 &middot; Memory placement</p>
+      <h2>Where state memory sits</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>A session's GPU cost is one page and never grows; its host cost is what grows, in four places. State pages live in the same KV cache region as attention blocks, so the KV cache manager, not a separate pool, owns their capacity.</p>
+      </div>
+<figure>
+<svg viewBox="0 0 760 484" width="100%" role="img" aria-label="State pages sit in the KV cache region; host history is what grows" font-size="13" xmlns="http://www.w3.org/2000/svg">
+<text x="24" y="28" font-size="15" font-weight="600" style="fill:var(--ink)">State pages sit in the KV cache region; host history is what grows</text>
+<text x="24" y="48" font-size="11.5" style="fill:var(--muted)">One GPU and one session's host structures; regions not to scale</text>
+<text x="24" y="80" font-size="11.5" font-weight="600" style="fill:var(--muted)">GPU memory</text>
+<rect x="24" y="92" width="150" height="56" rx="6" stroke-width="1.25" style="fill:var(--code-bg);stroke:var(--muted)"/>
+<text x="99" y="125" text-anchor="middle" style="fill:var(--ink)">Model weights</text>
+<rect x="176" y="92" width="88" height="56" rx="6" stroke-width="1.25" stroke-dasharray="5 4" style="fill:var(--code-bg);stroke:var(--muted)"/>
+<text font-size="10.5" text-anchor="middle" style="fill:var(--ink)"><tspan x="221" y="118">Profiling</tspan><tspan x="221" y="134">peak (transient)</tspan></text>
+<rect x="268" y="92" width="112" height="56" rx="6" stroke-width="1.25" style="fill:var(--code-bg);stroke:var(--muted)"/>
+<text font-size="11.5" text-anchor="middle" style="fill:var(--ink)"><tspan x="324" y="118">CUDA graph pools</tspan><tspan x="324" y="134">incl. model hooks</tspan></text>
+<rect x="384" y="92" width="352" height="56" rx="6" stroke-width="2" style="fill:none;stroke:var(--kv)"/>
+<rect x="392" y="106" width="14" height="28" rx="3" fill-opacity="0.35" style="fill:var(--muted)"/>
+<rect x="412" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<rect x="446" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<rect x="480" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<rect x="514" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<rect x="548" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<rect x="582" y="106" width="28" height="28" rx="4" fill-opacity="0.2" stroke-width="1.5" style="fill:var(--kv);stroke:var(--kv)"/>
+<text x="660" y="125" font-size="11.5" style="fill:var(--muted)">free pages</text>
+<text x="736" y="168" font-size="11.5" text-anchor="end" style="fill:var(--ink)">KV cache region (extensible): null block, then one state page per session</text>
+<text x="24" y="212" font-size="11.5" style="fill:var(--muted)">PR 6 sizes this region from what is left after profiling: 6,439 pages (37.87 GiB) on one A40.</text>
+<text x="24" y="228" font-size="11.5" style="fill:var(--muted)">The state pool fixes it at max_num_seqs + 1 = 65 pages: 4,927 MiB after startup against 43,315 MiB.</text>
+<text x="24" y="280" font-size="11.5" font-weight="600" style="fill:var(--muted)">Host memory, per session</text>
+<text x="534" y="280" font-size="11.5" font-weight="600" text-anchor="middle" style="fill:var(--muted)">PR 6 today</text>
+<text x="672" y="280" font-size="11.5" font-weight="600" text-anchor="middle" style="fill:var(--muted)">Proposal (PF-6)</text>
+<text x="24" y="314" font-weight="600" style="fill:var(--ink)">Scheduler request</text>
+<text x="24" y="330" font-size="11.5" style="fill:var(--muted)">tokens, audio features, block hashes</text>
+<rect x="474" y="304" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--bad);stroke:var(--bad)"/>
+<text x="534" y="320" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">grows per turn</text>
+<rect x="612" y="304" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--ok);stroke:var(--ok)"/>
+<text x="672" y="320" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">O(new input)</text>
+<text x="24" y="358" font-weight="600" style="fill:var(--ink)">Output processor</text>
+<text x="24" y="374" font-size="11.5" style="fill:var(--muted)">prompt ids and prompt text</text>
+<rect x="474" y="348" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--bad);stroke:var(--bad)"/>
+<text x="534" y="364" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">grows per turn</text>
+<rect x="612" y="348" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--ok);stroke:var(--ok)"/>
+<text x="672" y="364" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">O(new input)</text>
+<text x="24" y="402" font-weight="600" style="fill:var(--ink)">EngineCore payloads</text>
+<text x="24" y="418" font-size="11.5" style="fill:var(--muted)">original audio records kept per input</text>
+<rect x="474" y="392" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--bad);stroke:var(--bad)"/>
+<text x="534" y="408" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">grows per turn</text>
+<rect x="612" y="392" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--ok);stroke:var(--ok)"/>
+<text x="672" y="408" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">dropped when used</text>
+<text x="24" y="446" font-weight="600" style="fill:var(--ink)">Pending-input queues</text>
+<text x="24" y="462" font-size="11.5" style="fill:var(--muted)">four queues between the socket and the scheduler</text>
+<rect x="474" y="436" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--bad);stroke:var(--bad)"/>
+<text x="534" y="452" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">unbounded</text>
+<rect x="612" y="436" width="120" height="24" rx="12" fill-opacity="0.16" stroke-width="1" style="fill:var(--ok);stroke:var(--ok)"/>
+<text x="672" y="452" font-size="11.5" text-anchor="middle" style="fill:var(--ink)">bounded</text>
+</svg>
+<figcaption>code at PR 6 head; sizes from the A40 PoC round · GPU regions and 4 host structures</figcaption>
+</figure>
+      <div class="col stack">
+        <ul class="plain">
+  <li><strong>GPU.</strong> A page's size is the sum of the model's declared state shapes. At startup core profiles a forward pass, captures CUDA graphs and then gives the KV cache region what is left (<code>vllm/v1/worker/gpu_worker.py:828-832</code> at PR 6). That is why PR 6 allocated 6,439 pages on an A40 where the state pool allocated 65: budget-fit sizing against a fixed pool. The extensible KV cache reserves address space for every block and commits physical memory as needed, so addresses never move (<code>vllm/v1/worker/extensible_kv_cache.py:80-82</code>).</li>
+  <li><strong>Host.</strong> On PR 6 every turn appends to four structures, about 20 KiB per 320 ms chunk or 225 MiB per session-hour in the scheduler alone. PF-6 bounds each to the new input; the state pool already bounds the scheduler's copy but not the output processor's.</li>
+  <li><strong>Where the two meet.</strong> A page is GPU memory the scheduler accounts for in blocks; history is host memory nothing accounts for today. Pool sizing (budget-fit with a max_num_seqs + 1 floor) is an open decision in the requirements doc.</li>
+</ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="guidance">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">8 &middot; Guidance</p>
+      <h2>Guidance per use case</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Build the proposal for state that tokens cannot rebuild, leave bounded sessions as they are for attention KV, and close the gap between them with one turn transition that applies a retention policy per KV group. Retention policy is what makes hybrid and full-duplex models possible; it is a direction, not part of the current proposal.</p>
+      </div>
+<figure>
+<svg viewBox="0 0 760 400" width="100%" role="img" aria-label="One turn transition, two retention policies" font-size="13" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="grp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>
+<text x="24" y="28" font-size="15" font-weight="600" style="fill:var(--ink)">One turn transition, two retention policies</text>
+<text x="24" y="46" font-size="11.5" style="fill:var(--muted)">How bounded sessions and the proposal could share one mechanism (proposed, not built)</text>
+<rect x="24" y="60" width="712" height="96" rx="8" fill-opacity="0.1" stroke-width="2" style="fill:var(--kv);stroke:var(--kv)"/>
+<text x="40" y="84" font-weight="600" style="fill:var(--ink)">Shared turn transition, at every new input to a session</text>
+<text x="40" y="104" font-size="11.5" style="fill:var(--ink)">Compact host history to the oldest token a declared reader needs; keep positions counting with a logical offset.</text>
+<text x="40" y="122" font-size="11.5" style="fill:var(--ink)">Reset per-turn output state; neither look up nor publish prefix-cache blocks.</text>
+<text x="40" y="140" font-size="11.5" style="fill:var(--ink)">Quiesce only this request: no step of it in flight (a per-request barrier, not an engine-wide refusal of async).</text>
+<g fill="none" stroke-width="1.25" style="stroke:var(--muted)"><path d="M194 156V212" marker-end="url(#grp-arrow)"/><path d="M566 156V212" marker-end="url(#grp-arrow)"/></g>
+<text x="380" y="188" font-size="11.5" text-anchor="middle" style="fill:var(--muted)">then, per KV group</text>
+<rect x="24" y="212" width="340" height="104" rx="8" stroke-width="1.25" style="fill:none;stroke:var(--muted)"/>
+<text x="40" y="236" font-weight="600" style="fill:var(--ink)">Attention KV group</text>
+<text x="40" y="256" font-size="11.5" style="fill:var(--ink)">Evict whole blocks of old token ranges.</text>
+<text x="40" y="274" font-size="11.5" style="fill:var(--ink)">Re-prefill frees the whole request today; not yet for hybrids.</text>
+<text x="40" y="296" font-size="11.5" style="fill:var(--muted)">Today: #53879, one full-attention group only</text>
+<rect x="396" y="212" width="340" height="104" rx="8" stroke-width="2" style="fill:none;stroke:var(--kv)"/>
+<text x="412" y="236" font-weight="600" style="fill:var(--ink)">State group (not rebuildable)</text>
+<text x="412" y="256" font-size="11.5" style="fill:var(--ink)">Keep the page; never evict or recompute it.</text>
+<text x="412" y="274" font-size="11.5" style="fill:var(--ink)">Session ends before any re-prefill (no exact replay yet).</text>
+<text x="412" y="296" font-size="11.5" style="fill:var(--muted)">Today: PR 6 plus PF-1 to PF-9 (design)</text>
+<text x="24" y="348" font-size="11.5" style="fill:var(--muted)">Blocking today: live range eviction accepts exactly one full-attention group (vllm/v1/core/kv_cache_manager.py:718 at #53879),</text>
+<text x="24" y="366" font-size="11.5" style="fill:var(--muted)">and bounded sessions quiesce by refusing async scheduling engine-wide (vllm/v1/streaming/session.py:58).</text>
+</svg>
+<figcaption>proposed direction · code cited at #53879 head 015eb5e212</figcaption>
+</figure>
+      <div class="col stack">
+        <p>The watermark alone does not join the two. Bounded sessions re-prefill by freeing the whole request and recomputing it from a rebuilt transcript (<code>vllm/v1/streaming/session.py:321-331</code> at <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>), which would also free a hybrid model's state page. Skipping state writes during that replay does not help: a Mamba layer computes its outputs from the state it reads, and the current state already includes the replayed tokens. A hybrid session can use eviction with its state page kept, but until a reconstruction policy is designed it must end before any re-prefill, including one forced when eviction cannot free enough whole blocks.</p>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>Use case</th><th>Build</th><th>Refuse, for now</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Streaming ASR (Nemotron)</td><td>The proposal on PR 6: PF-1 to PF-9, then retire the state pool</td><td>Preemption, prefix sharing, connectors, speculative decoding for state requests</td><td>All nine requirements apply and the plugin uses nothing that is refused</td></tr>
+<tr><td>Bounded sessions (<a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>)</td><td>Nothing new; take PF-7's core admission and deadlines when they land</td><td>State groups (it already refuses them)</td><td>Its KV is rebuildable from the retained window, which PF-2 does not describe</td></tr>
+<tr><td>Resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>)</td><td>An in-place resume requirement shared with the proposal; Voxtral may declare its length stop resumable</td><td>Nothing new</td><td>In-place resume is its whole value, and the proposal leaves the resume path open</td></tr>
+<tr><td>Hybrid model, long session</td><td>Per-group retention (the diagram), after the proposal lands</td><td>Sessions past max_model_len; end at the horizon (PF-5)</td><td>PF-2 alone would pin full-length attention KV for every active session</td></tr>
+<tr><td>Ordinary chat</td><td>Nothing</td><td>Nothing</td><td>Every rule keys on a PF-1 declaration, so it is a no-op here</td></tr>
+<tr><td>Full-duplex speech (Moshi)</td><td>A continuous-input mode, in-place resume, input backpressure, then per-group retention</td><td>Open-ended sessions</td><td>No turns, no idle, and attention KV grows per frame</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p><strong>Order of work this suggests.</strong> First the proposal for streaming ASR, since it has a consumer, a baseline and measured gaps. Second, decide the resume path (in place or fold) with resident sessions in mind, since two use cases depend on it. Third, per-group retention, which needs bounded sessions' authors and a hybrid model to test against.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="checked">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">9 &middot; How this was checked</p>
+      <h2>How this was checked</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Every code citation was read at a pinned head, and an independent verifier re-read 19 load-bearing claims: 14 confirmed as written, 5 corrected for line numbers or detail, none unfound. Nothing was run on a GPU for this guide; measured figures come from the earlier A40 proof of concept.</p>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>Role</th><th>Who</th><th>What they did</th></tr></thead>
+<tbody>
+<tr><td>Lead</td><td>Lead</td><td>Framed the questions, integrated the findings, drew the diagrams, re-read key citations</td></tr>
+<tr><td>Applied Researcher</td><td>Applied researcher, session trace</td><td>Traced one session through PR 6 and the state pool, with memory placement</td></tr>
+<tr><td>Applied Researcher</td><td>Applied researcher, use cases</td><td>Applied PF-1 to PF-9 to six use cases, read <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a> and <a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a></td></tr>
+<tr><td>Applied Researcher</td><td>Cross-family reviewer, read-only</td><td>Built the code-verified feature matrix; found the state pool's unbounded output-processor history</td></tr>
+<tr><td>Verifier</td><td>Source verifier</td><td>Re-read 19 claims against the checkouts</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>Design</th><th>Checkout and head</th></tr></thead>
+<tbody>
+<tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head dc3d58ccc5</td></tr>
+<tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head 4582db799d</td></tr>
+<tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head 015eb5e212</td></tr>
+<tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head 665cc58c15</td></tr>
+<tr><td>Upstream</td><td>vLLM main 07e4d6b957</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p>Open doubts:</p>
+        <ul class="plain">
+  <li>The sleep-and-wake case (lifetime, surprise 3) is verified link by link but was not run end to end.</li>
+  <li>Bounded sessions refuse PP and DP above 1 at <code>vllm/v1/streaming/session.py:60-61</code>; the grid's "TP only" rests on there being no TP check.</li>
+  <li>Voxtral's turns ending on a length stop is inferred from <code>realtime_max_tokens = 1</code> (<code>vllm/model_executor/models/interfaces.py:1342</code> at PR 6), not observed.</li>
+  <li>The proposal's column is a design: no code implements PF-1 to PF-9 yet, so its green cells are targets, not results.</li>
+  <li>One source-size figure for <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> (1,531 source lines) uses a different count from the +1,493 under <code>vllm/</code> used here.</li>
+</ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="requirements">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">10 &middot; Requirements</p>
+      <h2>The nine requirements (PF-1 to PF-9)</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Each requirement states an outcome. The text is the requirements document's Generic feature requirements table as it stood on 2026-11-22.</p>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>ID and name</th><th>Requirement</th></tr></thead>
+<tbody>
+<tr><td>PF-1 Declare</td><td>A model declares each state component (shape, dtype, initial value), that its inputs cannot rebuild it, its tensor-parallel ownership, and which history it needs to continue: positions, if it reads them; past output, if its sampling params read it. It also declares its startup prerequisites: whether it captures its own graphs, what that capture needs, and which synthetic warmup inputs it accepts.</td></tr>
+<tr><td>PF-2 Preserve</td><td>A request holds its state exclusively from first schedule until it finishes by any path. Core performs no operation that loses, duplicates or rebuilds it (preempt, evict, recompute, prefix-share, cache reset, sleep), and the storage, layout and addressing a graph captured stay valid until that graph is retired, or the graph is invalidated and recaptured before its next replay.</td></tr>
+<tr><td>PF-3 Bound the page</td><td>A new page holds its declared initial value before its first read. A page is reused only after every access by its previous owner is ordered before the new owner's first access, on every finish path.</td></tr>
+<tr><td>PF-4 Exactly once</td><td>Committed input changes state once and in order. Nothing else changes it: not a sample after a stop, a resume replay, a warmup or profiling input, or input cancelled before it ran. Profiling, warmup and capture neither change nor read live state.</td></tr>
+<tr><td>PF-5 Turn boundary</td><td>A request parks only at a stop the model declares resumable. Any other end (length, position horizon, abort) finishes it. A model may declare a length stop resumable, as resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>) need.</td></tr>
+<tr><td>PF-6 Length independence</td><td>Per-turn work, transfer and retained host memory in every engine layer are O(new input): scheduler request, output processor, original payloads, encoder features and the pending-input queue.</td></tr>
+<tr><td>PF-7 Account and reclaim</td><td>Admission counts every resource a live request holds, running or parked, and refuses at open when one is exhausted. Every held resource has a bounded path back to free: deadlines for a stream never fed, parked idle or draining, and client abort.</td></tr>
+<tr><td>PF-8 Fail one request</td><td>A failure attributable to one request, reported by the model or forced by PF-2, finishes that request with an error; every other request continues. The rule defines what a partial write leaves in the page and which completion the failure belongs to. Arbitrary Python or CUDA exceptions stay fatal.</td></tr>
+<tr><td>PF-9 Start and resume safely</td><td>Core honors a model's declared profiling, warmup and capture prerequisites, so a model may decline synthetic inputs it does not support in favour of a supported preparation path, and counts retained allocations and transient peaks before final page sizing. Before serving after startup, wake or cache reset, core makes the required execution resources and graphs ready and consistent with PF-2 to PF-4.</td></tr>
+</tbody>
+</table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="glossary">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">11 &middot; Glossary</p>
+      <h2>Glossary</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+<table>
+<thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Session</td><td>One long-lived request that receives several inputs, such as a /v1/realtime audio stream</td></tr>
+<tr><td>Turn</td><td>The work one input causes, ending at a stop such as EOS</td></tr>
+<tr><td>Parked</td><td>A session between turns: it keeps its state and waits for the next input</td></tr>
+<tr><td>State page</td><td>The GPU memory holding one session's state; the state pool calls its index a slot, PR 6's MambaManager allocates it as a block</td></tr>
+<tr><td>Rebuildable (reconstructible)</td><td>The engine can recompute the cache from the request's tokens, as it can for attention KV</td></tr>
+<tr><td>Worker row</td><td>A row in the model runner's per-request tables; the worker has a fixed number</td></tr>
+<tr><td>Fold path</td><td>Upstream's resume: the scheduler appends the new input to the request, which waits and is reinstalled in the worker</td></tr>
+<tr><td>In-place resume</td><td>Resume without reinstalling the worker row (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>)</td></tr>
+<tr><td>Compaction</td><td>Dropping consumed history from host memory once nothing still needs it</td></tr>
+<tr><td>Logical position offset</td><td>Positions that keep counting across turns after compaction, kept apart from storage positions</td></tr>
+<tr><td>Async scheduling</td><td>The engine schedules step N+1 before step N's samples are known</td></tr>
+<tr><td>Watermark</td><td>The proposal's per-request count of tokens the state already includes, so core does not run replayed tokens through the state layers again</td></tr>
+<tr><td>PF-n</td><td>Requirement n of the proposal, defined in <a href="#requirements">The nine requirements</a></td></tr>
+<tr><td>B1 to B7, G1 to G7</td><td>Gaps and checks from the <a href="../state-pool-vs-state-layer/">PR 6 proof of concept</a></td></tr>
+</tbody>
+</table>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>), 2026-11-22. Code citations read at the heads named under <a href="#checked">How this was checked</a>.</p>
+    <p><a href="../state-pool-vs-state-layer/">State pool vs state layer</a> &middot; <a href="../streaming-session-designs/">Streaming-session designs</a> &middot; <a href="../">Persistent-state reviewer guide</a> &middot; <a href="../../">All reviewer guides</a> &middot; source: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
+  </div>
+</footer>
+<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"; mermaid.initialize({startOnLoad:true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'neutral'});</script>
+</body>
+</html>
