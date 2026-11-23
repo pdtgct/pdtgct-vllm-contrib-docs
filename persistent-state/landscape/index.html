@@ -829,6 +829,25 @@ sequenceDiagram
       <div class="col stack">
         <p><strong>Order of work this suggests.</strong> First the proposal for streaming ASR, since it has a consumer, a baseline and measured gaps. Second, decide the resume path (in place or fold) with resident sessions in mind, since two use cases depend on it. Third, per-group retention, which needs bounded sessions' authors and a hybrid model to test against.</p>
       </div>
+      <div class="col stack">
+        <h3>Left out on purpose, and when to add each</h3>
+        <p>The first version of the proposal leaves five extensions out. Each has a trigger: the need that should bring it in.</p>
+      </div>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Extension</th><th>Add it when</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td>Park on a per-turn <code>max_tokens</code> stop</td><td>a consumer's turns end on their output budget, as resident sessions (<a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a>) do</td><td>one model declaration; under the per-request barrier no watermark is needed, because the fold discards the turn's last sampled token and no step runs past the stop</td></tr>
+<tr><td>State-applied watermark</td><td>a model parks on a length stop, replays its last reply token, and keeps async overlap through the echo declaration</td><td>a per-request count of tokens the state already includes; tokens below it are not run through the state layers again</td></tr>
+<tr><td>In-place resume</td><td>a consumer needs O(1) resume transfer or keeps per-row worker state across turns</td><td>a worker turn transition that keeps the row</td></tr>
+<tr><td>Tensor and data parallelism above 1</td><td>a state model needs more than one GPU</td><td>replicated state, with failure reports agreed across ranks</td></tr>
+<tr><td>Per-group retention</td><td>a hybrid or full-duplex model runs past <code>max_model_len</code></td><td>one turn transition with a retention policy per KV group, plus a reconstruction policy for re-prefill</td></tr>
+</tbody>
+</table>
+      </div>
+      <div class="col stack">
+        <p>In every version, a session that reaches <code>max_model_len</code> ends.</p>
+      </div>
     </div>
   </div>
 </section>
