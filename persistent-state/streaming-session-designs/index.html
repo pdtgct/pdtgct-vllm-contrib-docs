@@ -162,6 +162,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <a href="#coverage">Gap coverage and trade-offs</a>
       <a href="#tests">What the tests showed</a>
       <a href="#checks">Candidate checks</a>
+      <a href="#future-roadmap">Future roadmap</a>
     </nav>
     <p class="muted" style="font-size:0.9rem">Part of the <a href="../">persistent-state reviewer guide</a>. Gap IDs B1 to B7 and check IDs G1 to G7 are those of <a href="../state-pool-vs-state-layer/">State pool vs state layer</a>.</p>
   </div>
@@ -242,7 +243,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <ul class="plain">
         <li>The engine core marks the output that ends a state stream (<code>EngineCoreOutput.terminal</code>). The frontend ends a stream only on that mark.</li>
         <li>State streams use <code>DELTA</code> output only, as <code>AsyncLLM</code> policy; core does not check the output kind. <code>CUMULATIVE</code> assembly belongs above the engine.</li>
-        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, structured outputs, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors. Core itself refuses structured outputs, prompt embeddings and inputs with no token ids on state streams, for every client.</li>
+        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, structured outputs, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors. Core itself refuses prompt embeddings and inputs with no token ids on state streams, for every client. Structured outputs are allowed: one grammar per stream, from its opener.</li>
         <li><code>AsyncLLM</code> bounds pending inputs per stream with credits (<code>max_pending_stream_inputs</code>, default 8), not with errors.</li>
         <li>An internal request id joins the external id, the client index, a per-instance nonce and a counter.</li>
       </ul>
@@ -257,14 +258,14 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <li>A continuation for an id core does not hold as a stream, including a held single request, is dropped (TURN-006).</li>
         <li>During shutdown an ADD is rejected; a held stream it names ends as an abort.</li>
         <li>An opener whose id names a held request ends that request with an error (ADMIT-021).</li>
-        <li>An input the fold cannot apply (no token ids, prompt embeddings or structured outputs) ends its stream or refuses its opener with <code>validation_error</code> (TURN-019).</li>
+        <li>An input the fold cannot apply (no token ids, prompt embeddings, or a continuation that changes the stream's structured outputs) ends its stream or refuses its opener with <code>validation_error</code> (TURN-019).</li>
         <li>An opener that skipped <code>admit_stream</code> is admitted with its row reserved, or refused with a retryable terminal output, including while paused (ADMIT-018). An input rejected in preprocessing takes the same order.</li>
         <li>An explicit abort, from the input queue or the eager abort queue, publishes the stream's terminal output after the free (TURN-003).</li>
         <li>Capacity is the configured <code>max_num_active_seqs</code>; there is no capacity report. The in-process client refuses state streams (ADMIT-023).</li>
         <li>A model may declare its per-turn <code>max_tokens</code> stop resumable; the position limit always ends the stream (TURN-012).</li>
       </ul>
-      <p>Two independent reviews approved the rules after four further rounds: 73 active specs. The implementation is
-        pdtgct/vllm <code>pstate-impl-20261122</code> at <code>4dc4b461d1</code>; its GPU test round waits for A40 capacity.</p>
+      <p>Two independent reviews approved the rules after four further rounds: 74 active specs. The implementation is
+        pdtgct/vllm <code>pstate-impl-20261122</code> at <code>9f7a4ce0ba</code>; its GPU test round waits for A40 capacity. Structured outputs on a state stream are allowed with one grammar per stream; the fold waits for a grammar that is still compiling (TURN-020).</p>
     </div>
   </div>
 </section>
@@ -608,6 +609,37 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       </table>
     </div>
     <p class="col" style="margin-top:1.3rem">The choice among the checks that are not started is open.</p>
+  </div>
+</section>
+
+<section id="future-roadmap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">10 &middot; Future roadmap</p>
+      <h2>Future roadmap</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Each item is left out of the proposal on purpose and has a trigger that would start it.</p>
+      </div>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Item</th><th>Trigger</th><th>Intended shape</th></tr></thead>
+<tbody>
+<tr><td>Prompt embeddings on state streams</td><td>A client that feeds embeddings as stream inputs</td><td>An upstream streaming feature for every model: carry <code>prompt_embeds</code> through the fold and drop them with compacted history. Upstream <code>AsyncLLM</code> refuses them on every streaming input today, and core refuses them on state streams.</td></tr>
+<tr><td>State streams on the in-process client</td><td>A streaming-input API on <code>LLM</code> or <code>LLMEngine</code>, which has none upstream, or debugging with multiprocessing off</td><td>Move the ordered guards and the outputs published between steps into <code>EngineCore</code>, with a pending-output list the next step drains. <code>vllm serve</code> and <code>AsyncLLM</code> already serve state streams on one GPU.</td></tr>
+<tr><td>Per-turn grammar</td><td>A client that wants structured output per turn</td><td>Rebuild the grammar from each input at the fold; today a stream keeps its opener's grammar.</td></tr>
+<tr><td>Exactly-once by input identity</td><td>A duplex model whose state advances from its input and needs async overlap</td><td>A continuation carries an input identity that core applies once.</td></tr>
+<tr><td>Stopped-row echo declaration</td><td>A model whose own rows need async overlap</td><td>A declaration that lifts the per-request barrier for that model, after an A40 exactly-once test.</td></tr>
+<tr><td>Tensor and data parallelism above 1</td><td>A state model needing more than one GPU, or a load-balancing stage client</td><td>Replicated state with failure reports agreed across ranks; each stream routed to one engine core.</td></tr>
+<tr><td>Per-group retention</td><td>Hybrid or full-duplex sessions past <code>max_model_len</code>, or context kept across barge-in</td><td>A retention policy per KV group at each turn transition.</td></tr>
+<tr><td>In-place resume</td><td>A consumer needing O(1) resume transfer</td><td>A turn transition that keeps the worker row.</td></tr>
+<tr><td>Serving-layer inactivity timeout and input bounds</td><td>Clients that idle or buffer input</td><td>Timeouts and queue bounds in the serving layer; the engine core is unchanged.</td></tr>
+<tr><td><code>CUMULATIVE</code> output</td><td>A client that wants the whole transcript in each output</td><td>Assembly of <code>DELTA</code> outputs above the engine.</td></tr>
+</tbody>
+</table>
+      </div>
+    </div>
   </div>
 </section>
 

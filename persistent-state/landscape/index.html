@@ -185,6 +185,7 @@ details.src pre { margin-top: 0.5rem; }
       <a href="#checked">How this was checked</a>
       <a href="#requirements">Requirements</a>
       <a href="#glossary">Glossary</a>
+      <a href="#future-roadmap">Future roadmap</a>
       <a href="#sources">Sources</a>
     </nav>
     <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-23. Back to the <a href="../">persistent-state guide</a>.</p>
@@ -461,7 +462,7 @@ flowchart TD
     </div>
     <div class="stack-lg">
       <div class="col stack">
-        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>4dc4b461d1</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,213 / &minus;57 lines under <code>vllm/</code> in 32 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
+        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>9f7a4ce0ba</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,312 / &minus;60 lines under <code>vllm/</code> in 32 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
         <p>Rules settled on 2026-11-23:</p>
         <ul class="plain">
   <li><strong>No deadlines in the engine core.</strong> The caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies.</li>
@@ -470,7 +471,7 @@ flowchart TD
   <li><strong>Recompute recovery is refused</strong> for state models; the per-request barrier always applies, and an opt-out for models that ignore stopped-row echoes is deferred.</li>
   <li><strong>Pending inputs are bounded by credits</strong> (<code>max_pending_stream_inputs</code>, default 8), not by errors.</li>
 </ul>
-        <p>Settled for duplex readiness: an engine-core contract that holds for every client of the engine-core process, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Core drops a continuation it does not hold as a stream, ends a held request when an opening request reuses its id, refuses an input it cannot fold (no token ids, prompt embeddings or structured outputs) with a validation error instead of failing an assert, publishes a terminal output on an explicit abort, and admits a stream with its opening request, reserving its row in the same step; one fixed order resolves competing conditions. A model may declare its per-turn <code>max_tokens</code> stop resumable.</p>
+        <p>Settled for duplex readiness: an engine-core contract that holds for every client of the engine-core process, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Core drops a continuation it does not hold as a stream, ends a held request when an opening request reuses its id, refuses an input it cannot fold (no token ids, prompt embeddings, or a continuation that changes the stream's structured outputs; a stream keeps one grammar from its opener) with a validation error instead of failing an assert, publishes a terminal output on an explicit abort, and admits a stream with its opening request, reserving its row in the same step; one fixed order resolves competing conditions. A model may declare its per-turn <code>max_tokens</code> stop resumable.</p>
       </div>
     </div>
   </div>
@@ -826,7 +827,7 @@ flowchart TB
 <tbody>
 <tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head <code>dc3d58ccc5</code></td></tr>
 <tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code></td></tr>
-<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>4dc4b461d1</code></td></tr>
+<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>9f7a4ce0ba</code></td></tr>
 <tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head <code>015eb5e212</code></td></tr>
 <tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head <code>665cc58c15</code></td></tr>
 <tr><td>Upstream, design citations</td><td>vLLM main <code>07e4d6b957</code></td></tr>
@@ -916,10 +917,41 @@ flowchart TB
   </div>
 </section>
 
+<section id="future-roadmap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">15 &middot; Future roadmap</p>
+      <h2>Future roadmap</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>Each item is left out of the proposal on purpose and has a trigger that would start it.</p>
+      </div>
+      <div class="table-box wide">
+<table>
+<thead><tr><th>Item</th><th>Trigger</th><th>Intended shape</th></tr></thead>
+<tbody>
+<tr><td>Prompt embeddings on state streams</td><td>A client that feeds embeddings as stream inputs</td><td>An upstream streaming feature for every model: carry <code>prompt_embeds</code> through the fold and drop them with compacted history. Upstream <code>AsyncLLM</code> refuses them on every streaming input today, and core refuses them on state streams.</td></tr>
+<tr><td>State streams on the in-process client</td><td>A streaming-input API on <code>LLM</code> or <code>LLMEngine</code>, which has none upstream, or debugging with multiprocessing off</td><td>Move the ordered guards and the outputs published between steps into <code>EngineCore</code>, with a pending-output list the next step drains. <code>vllm serve</code> and <code>AsyncLLM</code> already serve state streams on one GPU.</td></tr>
+<tr><td>Per-turn grammar</td><td>A client that wants structured output per turn</td><td>Rebuild the grammar from each input at the fold; today a stream keeps its opener's grammar.</td></tr>
+<tr><td>Exactly-once by input identity</td><td>A duplex model whose state advances from its input and needs async overlap</td><td>A continuation carries an input identity that core applies once.</td></tr>
+<tr><td>Stopped-row echo declaration</td><td>A model whose own rows need async overlap</td><td>A declaration that lifts the per-request barrier for that model, after an A40 exactly-once test.</td></tr>
+<tr><td>Tensor and data parallelism above 1</td><td>A state model needing more than one GPU, or a load-balancing stage client</td><td>Replicated state with failure reports agreed across ranks; each stream routed to one engine core.</td></tr>
+<tr><td>Per-group retention</td><td>Hybrid or full-duplex sessions past <code>max_model_len</code>, or context kept across barge-in</td><td>A retention policy per KV group at each turn transition.</td></tr>
+<tr><td>In-place resume</td><td>A consumer needing O(1) resume transfer</td><td>A turn transition that keeps the worker row.</td></tr>
+<tr><td>Serving-layer inactivity timeout and input bounds</td><td>Clients that idle or buffer input</td><td>Timeouts and queue bounds in the serving layer; the engine core is unchanged.</td></tr>
+<tr><td><code>CUMULATIVE</code> output</td><td>A client that wants the whole transcript in each output</td><td>Assembly of <code>DELTA</code> outputs above the engine.</td></tr>
+</tbody>
+</table>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="sources">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">15 &middot; Sources</p>
+      <p class="eyebrow">16 &middot; Sources</p>
       <h2>Sources</h2>
     </div>
     <div class="stack-lg">
