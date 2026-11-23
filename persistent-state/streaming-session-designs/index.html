@@ -217,9 +217,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
     </div>
     <div class="col stack">
       <p>The rules are EARS specs with the prefix PSTATE. The implementation is pdtgct/vllm branch
-        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>f24c53bca8</code>: upstream <code>main</code>
-        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,045 / &minus;56
-        lines under <code>vllm/</code> in 32 files. No commit after <code>7ba8f7d403</code> has run on a GPU. The rest of
+        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>1f40d66f4c</code>: upstream <code>main</code>
+        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,382 / &minus;66
+        lines under <code>vllm/</code> in 33 files. No commit after <code>e6406c502a</code> has run on a GPU. The rest of
         this page records the 2026-11-20 analysis that led to this design.</p>
     </div>
     <div class="table-box">
@@ -243,7 +243,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <ul class="plain">
         <li>The engine core marks the output that ends a state stream (<code>EngineCoreOutput.terminal</code>). The frontend ends a stream only on that mark.</li>
         <li>State streams use <code>DELTA</code> output only, as <code>AsyncLLM</code> policy; core does not check the output kind. <code>CUMULATIVE</code> assembly belongs above the engine.</li>
-        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, structured outputs, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors. Core itself refuses prompt embeddings and inputs with no token ids on state streams, for every client. Structured outputs are allowed: one grammar per stream, from its opener.</li>
+        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors. Core itself refuses prompt embeddings and inputs with no token ids on state streams, for every client. Structured outputs are allowed: one grammar per stream, from its opener.</li>
         <li><code>AsyncLLM</code> bounds pending inputs per stream with credits (<code>max_pending_stream_inputs</code>, default 8), not with errors.</li>
         <li>An internal request id joins the external id, the client index, a per-instance nonce and a counter.</li>
       </ul>
@@ -265,7 +265,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <li>A model may declare its per-turn <code>max_tokens</code> stop resumable; the position limit always ends the stream (TURN-012).</li>
       </ul>
       <p>Two independent reviews approved the rules after four further rounds: 74 active specs. The implementation is
-        pdtgct/vllm <code>pstate-impl-20261122</code> at <code>9f7a4ce0ba</code>; its GPU test round waits for A40 capacity. Structured outputs on a state stream are allowed with one grammar per stream; the fold waits for a grammar that is still compiling (TURN-020).</p>
+        pdtgct/vllm <code>pstate-impl-20261122</code> at <code>1f40d66f4c</code>; its GPU test round waits for A40 capacity. Structured outputs on a state stream are allowed with one grammar per stream; the fold waits for a grammar that is still compiling, and a grammar that fails to compile or rejects a token ends the stream terminally (TURN-020). The grammar is not reset per turn: after it terminates, later turns are unconstrained with xgrammar, guidance and outlines, and lm-format-enforcer ends the stream at the first later token it refuses.</p>
     </div>
   </div>
 </section>
