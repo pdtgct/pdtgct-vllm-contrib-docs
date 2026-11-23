@@ -461,16 +461,16 @@ flowchart TD
     </div>
     <div class="stack-lg">
       <div class="col stack">
-        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>f24c53bca8</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,045 / &minus;56 lines under <code>vllm/</code> in 32 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
+        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>4dc4b461d1</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,213 / &minus;57 lines under <code>vllm/</code> in 32 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
         <p>Rules settled on 2026-11-23:</p>
         <ul class="plain">
   <li><strong>No deadlines in the engine core.</strong> The caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies.</li>
   <li><strong>The engine core marks the end.</strong> <code>EngineCoreOutput.terminal</code> marks the output that ends a state stream; a frontend ends a stream only on that mark.</li>
-  <li><strong>DELTA output only.</strong> <code>CUMULATIVE</code> assembly belongs above the engine.</li>
+  <li><strong>DELTA output only</strong>, as <code>AsyncLLM</code> policy. <code>CUMULATIVE</code> assembly belongs above the engine.</li>
   <li><strong>Recompute recovery is refused</strong> for state models; the per-request barrier always applies, and an opt-out for models that ignore stopped-row echoes is deferred.</li>
   <li><strong>Pending inputs are bounded by credits</strong> (<code>max_pending_stream_inputs</code>, default 8), not by errors.</li>
 </ul>
-        <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop.</p>
+        <p>Settled for duplex readiness: an engine-core contract that holds for every client of the engine-core process, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Core drops a continuation it does not hold as a stream, ends a held request when an opening request reuses its id, refuses an input it cannot fold (no token ids, prompt embeddings or structured outputs) with a validation error instead of failing an assert, publishes a terminal output on an explicit abort, and admits a stream with its opening request, reserving its row in the same step; one fixed order resolves competing conditions. A model may declare its per-turn <code>max_tokens</code> stop resumable.</p>
       </div>
     </div>
   </div>
@@ -826,7 +826,7 @@ flowchart TB
 <tbody>
 <tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head <code>dc3d58ccc5</code></td></tr>
 <tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code></td></tr>
-<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>f24c53bca8</code></td></tr>
+<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>4dc4b461d1</code></td></tr>
 <tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head <code>015eb5e212</code></td></tr>
 <tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head <code>665cc58c15</code></td></tr>
 <tr><td>Upstream, design citations</td><td>vLLM main <code>07e4d6b957</code></td></tr>
