@@ -150,6 +150,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <div><b>Smaller core change</b><span>34 lines under <code>vllm/</code> against <code>main</code>, where #67374 adds 1,531 lines of source.</span></div>
     </div>
     <nav class="toc" aria-label="Sections">
+      <a href="#production">Production design</a>
       <a href="#summary">Summary</a>
       <a href="#terms">Terms</a>
       <a href="#map">Where each piece lives</a>
@@ -169,6 +170,63 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 </header>
 
 <main>
+
+<section id="production">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">2026-11-23 &middot; Production design</p>
+      <h2>The production design keeps PR 6's state layer and closes each gap with a stated rule</h2>
+    </div>
+    <div class="col stack">
+      <p>The rules are EARS specs with the prefix PSTATE. The implementation is pdtgct/vllm branch
+        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>f24c53bca8</code>: upstream <code>main</code>
+        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,045 / &minus;56
+        lines under <code>vllm/</code> in 32 files. No commit after <code>7ba8f7d403</code> has run on a GPU. The rest of
+        this page records the 2026-11-20 analysis that led to this design.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Gap</th><th>Production rule</th><th>Specs</th></tr></thead>
+        <tbody>
+          <tr><td class="name">B1 per-request failure</td><td>The model state reports failed request ids after each step, and the scheduler finishes each named request alone with <code>FINISHED_ERROR</code>. Recompute recovery is refused for state models.</td><td class="mono">FAIL-001, FAIL-002, DECL-005</td></tr>
+          <tr><td class="name">B2 worker rows run out</td><td>Admission counts running, parked and resumed streams against <code>max_num_active_reqs</code>.</td><td class="mono">ADMIT-004</td></tr>
+          <tr><td class="name">B3 history growth</td><td>Each fold compacts the prompt to the compacted frontier plus the new input and drops consumed multimodal features. The output processor resets its per-turn state. Retained host bytes per stream stay within a stated bound.</td><td class="mono">HIST-001 to HIST-008</td></tr>
+          <tr><td class="name">B4 admission and idle reclaim</td><td>Admission is mandatory for state streams; a refused stream gets HTTP 503. The engine core has no deadlines: the caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies. A serving layer may add an inactivity timeout.</td><td class="mono">ADMIT-001, ADMIT-004, ADMIT-015 to ADMIT-017</td></tr>
+          <tr><td class="name">B5 model hooks</td><td>The hooks-only re-cut of #67583. A model that refuses synthetic warmup skips kernel and sizing warmup.</td><td class="mono">PREP-001 to PREP-008</td></tr>
+          <tr><td class="name">B6 length stop</td><td>Only a stop-free EOS parks by default. A model may declare the per-turn <code>max_tokens</code> stop resumable; the position limit always ends the stream.</td><td class="mono">TURN-001, TURN-008, TURN-012</td></tr>
+          <tr><td class="name">B7 page initialization</td><td>Core writes each component's initial value, zero by default, when <code>MambaManager</code> allocates a page, and at no other time.</td><td class="mono">PAGE-001, PAGE-007</td></tr>
+          <tr><td class="name">G5 EOS under async scheduling</td><td>The scheduler does not schedule a state request while it has tokens in flight; other requests keep async overlap. An opt-out for models that ignore stopped-row echoes is deferred.</td><td class="mono">ASYNC-001 to ASYNC-003</td></tr>
+          <tr><td class="name">Release ordering (see <a href="#fence">Release fence</a>)</td><td>Core publishes the output that ends a stream only after it frees the stream's page, and orders the old owner's page accesses before the new owner's initialization.</td><td class="mono">PAGE-004, PAGE-005</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col stack">
+      <p>Settled rules:</p>
+      <ul class="plain">
+        <li>The engine core marks the output that ends a state stream (<code>EngineCoreOutput.terminal</code>). The frontend ends a stream only on that mark.</li>
+        <li>State streams use <code>DELTA</code> output only. <code>CUMULATIVE</code> assembly belongs above the engine.</li>
+        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, structured outputs, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors.</li>
+        <li><code>AsyncLLM</code> bounds pending inputs per stream with credits (<code>max_pending_stream_inputs</code>, default 8), not with errors.</li>
+        <li>An internal request id joins the external id, the client index, a per-instance nonce and a counter.</li>
+      </ul>
+      <h3 id="duplex">Duplex readiness (under review)</h3>
+      <p>vLLM-Omni's orchestrator drives each stage's engine core through <code>StageEngineCoreClient</code>, not
+        <code>AsyncLLM</code>. The revision therefore splits the design into an engine-core contract and
+        <code>AsyncLLM</code> policy. It adds core admission for an opening ADD that had no <code>admit_stream</code> call,
+        a capacity report, and the declared resumable <code>max_tokens</code> stop. Two independent reviews returned
+        changes required:</p>
+      <ul class="plain">
+        <li>An empty continuation from a client that bypasses <code>AsyncLLM</code> fails an assert in the scheduler and stops the engine core. Core needs its own rule that ends that stream with an error.</li>
+        <li>An opening ADD that reuses a held request id merges into the held stream. Core must refuse it.</li>
+        <li>Core processes an explicit abort without publishing a terminal output, so a client that waits for the terminal mark can wait forever.</li>
+        <li>Admission should ride the opening ADD, which checks and reserves capacity in one step. The capacity report repeats <code>max_num_active_reqs</code>, which is fixed at startup.</li>
+        <li>Unique ids and the pending-input bound hold only for clients that follow a stated client protocol.</li>
+      </ul>
+      <p>Both reviews passed the declared resumable <code>max_tokens</code> stop (TURN-012). Next: revise the rules for
+        these findings, add tests and code for the duplex rules, then run one A40 round.</p>
+    </div>
+  </div>
+</section>
 
 <section id="summary">
   <div class="wrap">

@@ -529,7 +529,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>.
           <a href="landscape/">A maintainer's guide to the landscape</a> explains vLLM's KV cache layout, compares the
           five designs feature by feature, applies the proposed requirements to six use cases and traces one
-          session's lifetime.</p>
+          session's lifetime.
+          The production implementation builds on the state layer; its rule for each gap is under
+          <a href="state-pool-vs-state-layer/#production">Production design</a>.</p>
       </div>
       <div class="prs">
         <article class="pr">
