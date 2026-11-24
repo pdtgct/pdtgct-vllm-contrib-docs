@@ -183,6 +183,7 @@ details.src pre { margin-top: 0.5rem; }
       <a href="#roadmap">Roadmap</a>
       <a href="#guidance">Guidance</a>
       <a href="#checked">How this was checked</a>
+      <a href="#state-sizing-proposal">State sizing proposal</a>
       <a href="#requirements">Requirements</a>
       <a href="#glossary">Glossary</a>
       <a href="#future-roadmap">Future roadmap</a>
@@ -867,6 +868,39 @@ flowchart TB
       </div>
       </div>
       <div class="col stack">
+      <h3 id="state-sizing-proposal">Open proposal: sizing streaming state without token accounting</h3>
+      <p>Status: proposal for maintainer review, not adopted. The implementation at pdtgct/vllm <code>ddf6db2ab8</code> follows the upstream convention (option 1 below). Code references are at that commit.</p>
+      <p><strong>Problem</strong></p>
+      <p>A stream's state is a fixed set of tensors. Its size in bytes does not depend on how many tokens the stream has produced. vLLM's Mamba path accounts for it in tokens:</p>
+      <ul class="plain">
+        <li>A Mamba page's size in bytes comes only from the state shapes and padding (<code>vllm/v1/kv_cache_interface.py:588-594</code>). <code>MambaSpec.block_size</code> sets how many token positions one page covers.</li>
+        <li>Without prefix caching, upstream sets <code>mamba_block_size = max_model_len</code> (<code>vllm/model_executor/models/config.py:1364</code>) and rejects any other value (<code>vllm/config/vllm.py:3848-3858</code>). One page then covers the whole request.</li>
+        <li>With a smaller <code>block_size</code>, <code>MambaManager</code> allocates one page per <code>block_size</code> tokens, and the state moves to a new page at each page boundary. Only the prefix-caching path copies the state forward.</li>
+        <li>The memory cost lies outside the page itself:
+          <ul class="plain">
+            <li>the state pool is sized from the shared KV cache budget;</li>
+            <li>state pages of different sizes may be padded to the largest when the planner unifies page sizes;</li>
+            <li>in hybrid models the attention block size is raised until one attention page holds a state page.</li>
+          </ul>
+        </li>
+      </ul>
+      <p>The persistent-state layer needs a stream's page to keep one block id and device address until the stream finishes, because the model's CUDA graphs address the page by block id.</p>
+      <p><strong>Options</strong></p>
+      <ol class="plain">
+        <li><strong>Keep the upstream convention (current).</strong> <code>block_size = max_model_len</code>. Core refuses a state group with a smaller <code>block_size</code>, as upstream's validator already does without prefix caching. This adds no new class. The cost is that the token terms stay, and state is still budgeted from the shared KV pool.</li>
+        <li><strong>Clamp.</strong> Accept a smaller declared <code>block_size</code> and allocate as if it were <code>max_model_len</code>. This touches only the persistent-state verification. The cost is that core overrides a value the model declared.</li>
+        <li><strong>One-page manager.</strong> A <code>MambaManager</code> subclass, selected through <code>ManagerConfig</code> as <code>CircularBufferManager</code> is, gives each state request exactly one page per state group, whatever <code>block_size</code> says. Slot mapping, warmup reservations and per-request block counts treat a state group as one page. Models keep declaring <code>MambaManager.layer_config(spec, recomputable=False)</code>. The cost is a new manager class in core.</li>
+        <li><strong>Per-group page sizes, or a second block pool with a byte split</strong> (the direction of <a href="https://github.com/vllm-project/vllm/issues/55196">vllm#55196</a>). This removes the padding costs once a state model also has attention KV. It is the largest change and is deferred.</li>
+      </ol>
+      <p>Options 1 to 3 do not change the memory a state stream uses: each gives a stream one page of the same size. Only option 4 changes how state memory is budgeted.</p>
+      <p>The first consumer, Nemotron streaming ASR, has no attention KV group, so the hybrid padding cost does not arise for it.</p>
+      <p><strong>Questions for maintainers</strong></p>
+      <ol class="plain">
+        <li>Should streaming state follow option 1's convention, or would you accept option 3's one-page manager?</li>
+        <li>If neither, where should byte-sized state go: per-group page sizes under #55196, or worker-driven allocation under <a href="https://github.com/vllm-project/vllm/issues/42449">#42449</a>?</li>
+      </ol>
+      </div>
+      <div class="col stack">
         <p>Open doubts:</p>
         <ul class="plain">
   <li>The sleep-and-wake case is verified link by link but was not run end to end.</li>
@@ -978,6 +1012,8 @@ flowchart TB
 <tr><td>In-place resume</td><td>A consumer needing O(1) resume transfer</td><td>A turn transition that keeps the worker row.</td></tr>
 <tr><td>Serving-layer inactivity timeout and input bounds</td><td>Clients that idle or buffer input</td><td>Timeouts and queue bounds in the serving layer; the engine core is unchanged.</td></tr>
 <tr><td><code>CUMULATIVE</code> output</td><td>A client that wants the whole transcript in each output</td><td>Assembly of <code>DELTA</code> outputs above the engine.</td></tr>
+<tr><td>Option 3, the one-page manager</td><td>Maintainers accept a new manager class</td><td><code>MambaManager</code> subclass; one page per state group; no per-token slot mapping</td></tr>
+<tr><td>Option 4, byte-sized state pools</td><td>A state model with attention KV, and a maintainer answer on #55196</td><td>Per-group page sizes, or a second pool with a static byte split</td></tr>
 </tbody>
 </table>
       </div>
