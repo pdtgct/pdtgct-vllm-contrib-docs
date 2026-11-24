@@ -435,7 +435,7 @@ flowchart TD
 <tr><td class="name">Speculative decoding</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="fold only: partial">fold only</td></tr>
 <tr><td class="name">KV connectors</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="unproven: partial">unproven</td></tr>
 <tr><td class="name">Core lines, vllm/</td><td class="fg na" title="+1,493: neutral">+1,493</td><td class="fg na" title="+34: neutral">+34</td><td class="fg na prop" title="+1,045: neutral">+1,045</td><td class="fg na" title="+330, +1,895: neutral">+330, +1,895</td><td class="fg na" title="+138: neutral">+138</td></tr>
-<tr><td class="name">Evidence</td><td class="fg good" title="A40, full suite: works">A40, full suite</td><td class="fg warn" title="1 A40 PoC: partial">1 A40 PoC</td><td class="fg warn prop" title="unit tests: partial">unit tests</td><td class="fg warn" title="CPU + Qwen GPU: partial">CPU + Qwen GPU</td><td class="fg warn" title="1 H100 run: partial">1 H100 run</td></tr>
+<tr><td class="name">Evidence</td><td class="fg good" title="A40, full suite: works">A40, full suite</td><td class="fg warn" title="1 A40 PoC: partial">1 A40 PoC</td><td class="fg warn prop" title="A40, ten suites; no acceptance run: partial">A40, ten suites</td><td class="fg warn" title="CPU + Qwen GPU: partial">CPU + Qwen GPU</td><td class="fg warn" title="1 H100 run: partial">1 H100 run</td></tr>
 </tbody></table></div>
 <p class="muted fg-sub">* in place only for tokenless updates that used up their output budget; otherwise the fold path.</p>
 <figcaption>code read at the heads under How this was checked · 5 designs × 15 features</figcaption>
@@ -462,7 +462,7 @@ flowchart TD
     </div>
     <div class="stack-lg">
       <div class="col stack">
-        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>1f40d66f4c</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,382 / &minus;66 lines under <code>vllm/</code> in 33 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
+        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>ac2ef47540</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,390 / &minus;66 lines under <code>vllm/</code> in 33 files. This head passed its A40 GPU round on 2026-11-23 (ten suites, 798 test cases, 0 failed, 0 skipped). <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
         <p>Rules settled on 2026-11-23:</p>
         <ul class="plain">
   <li><strong>No deadlines in the engine core.</strong> The caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies.</li>
@@ -827,7 +827,7 @@ flowchart TB
 <tbody>
 <tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head <code>dc3d58ccc5</code></td></tr>
 <tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code></td></tr>
-<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>1f40d66f4c</code></td></tr>
+<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>ac2ef47540</code></td></tr>
 <tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head <code>015eb5e212</code></td></tr>
 <tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head <code>665cc58c15</code></td></tr>
 <tr><td>Upstream, design citations</td><td>vLLM main <code>07e4d6b957</code></td></tr>
@@ -843,7 +843,7 @@ flowchart TB
   <li>The sleep-and-wake case is verified link by link but was not run end to end.</li>
   <li>Bounded sessions refuse PP and DP above 1; "TP only" rests on there being no TP check.</li>
   <li>Voxtral's turns ending on a length stop is inferred from <code>realtime_max_tokens = 1</code>, not observed.</li>
-  <li>The proposal's column describes the design. Its implementation has not run on a GPU since the rules were simplified, so its green cells are targets, not results.</li>
+  <li>The proposal's column describes the design. Its implementation head <code>ac2ef47540</code> passed its A40 GPU round on 2026-11-23 (ten suites, 798 test cases, 0 failed, 0 skipped). The acceptance tests have not run, so its other green cells are targets, not results.</li>
   <li>TensorRT-LLM rests on its published documentation, not on code read for this guide.</li>
   <li>The full-duplex PF-4 overlap cost and the preemption hazard for Omni sessions are inferences; nothing was run.</li>
   <li>PR 6 line numbers were not re-checked against main; where main has moved, a rebase will shift them.</li>
