@@ -243,11 +243,11 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <ul class="plain">
         <li>The engine core marks the output that ends a state stream (<code>EngineCoreOutput.terminal</code>). The frontend ends a stream only on that mark.</li>
         <li>State streams use <code>DELTA</code> output only. <code>CUMULATIVE</code> assembly belongs above the engine.</li>
-        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, structured outputs, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors.</li>
+        <li><code>AsyncLLM</code> refuses these sampling options on every input of a state stream: <code>n</code> &gt; 1, stop strings, penalties, <code>bad_words</code>, <code>prompt_logprobs</code>, <code>thinking_token_budget</code> and custom logits processors. Structured outputs, refused at first, are allowed at <code>de0b0bccdb</code> with one grammar per stream.</li>
         <li><code>AsyncLLM</code> bounds pending inputs per stream with credits (<code>max_pending_stream_inputs</code>, default 8), not with errors.</li>
         <li>An internal request id joins the external id, the client index, a per-instance nonce and a counter.</li>
       </ul>
-      <h3 id="duplex">Duplex readiness (under review)</h3>
+      <h3 id="duplex">Duplex readiness (reviewed; implemented at de0b0bccdb)</h3>
       <p>vLLM-Omni's orchestrator drives each stage's engine core through <code>StageEngineCoreClient</code>, not
         <code>AsyncLLM</code>. The revision therefore splits the design into an engine-core contract and
         <code>AsyncLLM</code> policy. It adds core admission for an opening ADD that had no <code>admit_stream</code> call,
@@ -260,6 +260,10 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <li>Admission should ride the opening ADD, which checks and reserves capacity in one step. The capacity report repeats <code>max_num_active_reqs</code>, which is fixed at startup.</li>
         <li>Unique ids and the pending-input bound hold only for clients that follow a stated client protocol.</li>
       </ul>
+      <p>Implemented at <code>de0b0bccdb</code> (<code>vllm/v1/engine/core.py:2145-2209</code>): core ends a stream
+        with an error on an input that carries no prompt tokens; an opening ADD that reuses a held request id ends the
+        held stream with an error instead of merging into it; an explicit abort publishes a terminal output; and a
+        stream is admitted with its opening ADD. The A40 round ran at <code>ddf6db2ab8</code>.</p>
       <p>Both reviews passed the declared resumable <code>max_tokens</code> stop (TURN-012). Next: revise the rules for
         these findings, add tests and code for the duplex rules, then run one A40 round.</p>
     </div>

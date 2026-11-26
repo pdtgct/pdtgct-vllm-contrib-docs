@@ -470,7 +470,7 @@ flowchart TD
   <li><strong>Recompute recovery is refused</strong> for state models; the per-request barrier always applies, and an opt-out for models that ignore stopped-row echoes is deferred.</li>
   <li><strong>Pending inputs are bounded by credits</strong> (<code>max_pending_stream_inputs</code>, default 8), not by errors.</li>
 </ul>
-        <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop.</p>
+        <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop. Implemented at <code>de0b0bccdb</code> (<code>vllm/v1/engine/core.py:2145-2209</code>): all four rules, with an opener that reuses a held request id ending the held stream with an error.</p>
       </div>
     </div>
   </div>
@@ -842,7 +842,7 @@ flowchart TB
   <li>The sleep-and-wake case is verified link by link but was not run end to end.</li>
   <li>Bounded sessions refuse PP and DP above 1; "TP only" rests on there being no TP check.</li>
   <li>Voxtral's turns ending on a length stop is inferred from <code>realtime_max_tokens = 1</code>, not observed.</li>
-  <li>The proposal's column describes the design. Its implementation has not run on a GPU since the rules were simplified, so its green cells are targets, not results.</li>
+  <li>The proposal's column describes the design. Its GPU tests pass (an A40 at <code>ddf6db2ab8</code>, an L40S at <code>de0b0bccdb</code>), but no acceptance run (PSTATE-ACC-001 to ACC-004) has happened, so its other green cells are targets, not results. The plugin arms wait for the plugin to capture from the state-group layout and to accept core's graph capture. Runner graphs with <code>torch.compile</code> on, a guaranteed fold in a GPU stream, batch invariance and chunked prefill of a state request are untested.</li>
   <li>TensorRT-LLM rests on its published documentation, not on code read for this guide.</li>
   <li>The full-duplex PF-4 overlap cost and the preemption hazard for Omni sessions are inferences; nothing was run.</li>
   <li>PR 6 line numbers were not re-checked against main; where main has moved, a rebase will shift them.</li>
