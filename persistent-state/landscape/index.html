@@ -187,7 +187,7 @@ details.src pre { margin-top: 0.5rem; }
       <a href="#glossary">Glossary</a>
       <a href="#sources">Sources</a>
     </nav>
-    <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-23. Back to the <a href="../">persistent-state guide</a>.</p>
+    <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-25. Back to the <a href="../">persistent-state guide</a>.</p>
   </div>
 </header>
 
@@ -416,7 +416,7 @@ flowchart TD
       </div>
 <figure class="fgrid-fig">
 <p class="fg-title">The proposal aims for the state pool's guarantees without its refusals</p>
-<p class="muted fg-sub">Green works, amber partial or untested, red missing or refused. The proposal is implemented but not yet run on a GPU.</p>
+<p class="muted fg-sub">Green works, amber partial or untested, red missing or refused. The proposal's GPU tests pass; its acceptance runs are pending.</p>
 <p class="fg-legend"><span class="fg good">works</span> <span class="fg warn">partial or untested</span> <span class="fg bad">missing or refused</span> <span class="fg na">neutral</span></p>
 <div class="table-box"><table class="fgrid">
 <thead><tr><th>Feature</th><th class="">State pool</th><th class="">PR 6 as-is</th><th class="prop">Proposal</th><th class="">Bounded</th><th class="">Resident</th></tr></thead><tbody>
@@ -426,15 +426,15 @@ flowchart TD
 <tr><td class="name">Admission at open</td><td class="fg good" title="refuse at open: works">refuse at open</td><td class="fg bad" title="B2 bug: missing or refused">B2 bug</td><td class="fg good prop" title="refuse at open: works">refuse at open</td><td class="fg warn" title="budget check: partial">budget check</td><td class="fg warn" title="ordinary: partial">ordinary</td></tr>
 <tr><td class="name">Idle reclaim</td><td class="fg good" title="3 deadlines: works">3 deadlines</td><td class="fg bad" title="none: missing or refused">none</td><td class="fg good prop" title="caller aborts: works">caller aborts</td><td class="fg warn" title="HTTP reaper: partial">HTTP reaper</td><td class="fg bad" title="none: missing or refused">none</td></tr>
 <tr><td class="name">One session fails</td><td class="fg good" title="model reports: works">model reports</td><td class="fg bad" title="engine dies: missing or refused">engine dies</td><td class="fg good prop" title="model reports: works">model reports</td><td class="fg warn" title="validation only: partial">validation only</td><td class="fg warn" title="preprocessing: partial">preprocessing</td></tr>
-<tr><td class="name">Preemption</td><td class="fg good" title="fails request: works">fails request</td><td class="fg bad" title="raises: missing or refused">raises</td><td class="fg good prop" title="fails request: works">fails request</td><td class="fg good" title="replay: works">replay</td><td class="fg good" title="replay: works">replay</td></tr>
+<tr><td class="name">Preemption</td><td class="fg good" title="fails request: works">fails request</td><td class="fg bad" title="raises: missing or refused">raises</td><td class="fg good prop" title="waits; never preempted: works">waits; never preempted</td><td class="fg good" title="replay: works">replay</td><td class="fg good" title="replay: works">replay</td></tr>
 <tr><td class="name">Prefix caching</td><td class="fg na" title="refused: neutral">refused</td><td class="fg na" title="Mamba limits: neutral">Mamba limits</td><td class="fg na prop" title="off per request: neutral">off per request</td><td class="fg na" title="off per request: neutral">off per request</td><td class="fg good" title="ordinary: works">ordinary</td></tr>
 <tr><td class="name">Async scheduling</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="on; EOS bug: partial">on; EOS bug</td><td class="fg good prop" title="with barrier: works">with barrier</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg good" title="allowed: works">allowed</td></tr>
 <tr><td class="name">CUDA graphs</td><td class="fg warn" title="model only: partial">model only</td><td class="fg good" title="available: works">available</td><td class="fg good prop" title="available: works">available</td><td class="fg bad" title="eager only: missing or refused">eager only</td><td class="fg good" title="available: works">available</td></tr>
-<tr><td class="name">TP, PP, DP</td><td class="fg bad" title="all must be 1: missing or refused">all must be 1</td><td class="fg warn" title="untested: partial">untested</td><td class="fg warn prop" title="TP replicated: partial">TP replicated</td><td class="fg warn" title="TP only: partial">TP only</td><td class="fg warn" title="no PP in place: partial">no PP in place</td></tr>
+<tr><td class="name">TP, PP, DP</td><td class="fg bad" title="all must be 1: missing or refused">all must be 1</td><td class="fg warn" title="untested: partial">untested</td><td class="fg warn prop" title="all 1 today; TP &gt; 1 required (roadmap): partial">all 1 today; TP &gt; 1 required (roadmap)</td><td class="fg warn" title="TP only: partial">TP only</td><td class="fg warn" title="no PP in place: partial">no PP in place</td></tr>
 <tr><td class="name">Speculative decoding</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="fold only: partial">fold only</td></tr>
 <tr><td class="name">KV connectors</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="untested: partial">untested</td><td class="fg bad prop" title="non-goal: missing or refused">non-goal</td><td class="fg bad" title="refused: missing or refused">refused</td><td class="fg warn" title="unproven: partial">unproven</td></tr>
-<tr><td class="name">Core lines, vllm/</td><td class="fg na" title="+1,493: neutral">+1,493</td><td class="fg na" title="+34: neutral">+34</td><td class="fg na prop" title="+1,045: neutral">+1,045</td><td class="fg na" title="+330, +1,895: neutral">+330, +1,895</td><td class="fg na" title="+138: neutral">+138</td></tr>
-<tr><td class="name">Evidence</td><td class="fg good" title="A40, full suite: works">A40, full suite</td><td class="fg warn" title="1 A40 PoC: partial">1 A40 PoC</td><td class="fg warn prop" title="unit tests: partial">unit tests</td><td class="fg warn" title="CPU + Qwen GPU: partial">CPU + Qwen GPU</td><td class="fg warn" title="1 H100 run: partial">1 H100 run</td></tr>
+<tr><td class="name">Core lines, vllm/</td><td class="fg na" title="+1,493: neutral">+1,493</td><td class="fg na" title="+34: neutral">+34</td><td class="fg na prop" title="+1,729: neutral">+1,729</td><td class="fg na" title="+330, +1,895: neutral">+330, +1,895</td><td class="fg na" title="+138: neutral">+138</td></tr>
+<tr><td class="name">Evidence</td><td class="fg good" title="A40, full suite: works">A40, full suite</td><td class="fg warn" title="1 A40 PoC: partial">1 A40 PoC</td><td class="fg warn prop" title="A40 + L40S tests: partial">A40 + L40S tests</td><td class="fg warn" title="CPU + Qwen GPU: partial">CPU + Qwen GPU</td><td class="fg warn" title="1 H100 run: partial">1 H100 run</td></tr>
 </tbody></table></div>
 <p class="muted fg-sub">* in place only for tokenless updates that used up their output budget; otherwise the fold path.</p>
 <figcaption>code read at the heads under How this was checked · 5 designs × 15 features</figcaption>
@@ -445,7 +445,7 @@ flowchart TD
   <li><strong>Async scheduling and CUDA graphs.</strong> The state pool refuses async scheduling engine-wide, and runner graphs. PR 6 allows both but writes a stop token into state under async (G5). The proposal keeps both with a per-request barrier: the scheduler does not schedule a state request while it has tokens in flight, so only rows with state lose overlap.</li>
   <li><strong>History bounded.</strong> The state pool bounds the scheduler's copy, but its output processor still appends prompt ids for requests that skip stream admission (<code>vllm/v1/engine/output_processor.py:311</code> at the pool's head). PR 6 grows the prompt every turn. The proposal requires a bound in every layer.</li>
   <li><strong>One session fails.</strong> On PR 6 a failing row raises and the engine stops for every client. The state pool and the proposal let the model report the failed request, which finishes alone.</li>
-  <li><strong>Preemption.</strong> Attention designs replay; state cannot be replayed, so the state pool and the proposal end the request where PR 6 raises.</li>
+  <li><strong>Preemption.</strong> Attention designs replay; state cannot be replayed, so the state pool ends the request and PR 6 raises. The proposal never preempts a state request: the request waits for a later step, and startup refuses a cache too small to hold every active request.</li>
 </ul>
         <p>The proposal relaxes one state-pool guarantee on purpose: the pool ends a session on every stop but EOS (<code>vllm/v1/core/sched/state_scheduler.py:307</code>), and PF-5 lets a model declare its per-turn <code>max_tokens</code> stop resumable. Under the per-request barrier this needs no watermark: the fold discards the turn's last sampled token, and no step runs past the stop. A stop at the position limit always ends the stream.</p>
       </div>
@@ -457,11 +457,11 @@ flowchart TD
   <div class="wrap">
     <div class="head col">
       <p class="eyebrow">6 &middot; Status</p>
-      <h2>Where the proposal stands (2026-11-23)</h2>
+      <h2>Where the proposal stands (2026-11-25)</h2>
     </div>
     <div class="stack-lg">
       <div class="col stack">
-        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>f24c53bca8</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,045 / &minus;56 lines under <code>vllm/</code> in 32 files. The latest commits have not run on a GPU. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
+        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>de0b0bccdb</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,729 / &minus;86 lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases, 2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). Core implements the state-group layout accessor and the block-0 capture rule; the plugin does not yet capture from them. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
         <p>Rules settled on 2026-11-23:</p>
         <ul class="plain">
   <li><strong>No deadlines in the engine core.</strong> The caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies.</li>
@@ -470,7 +470,7 @@ flowchart TD
   <li><strong>Recompute recovery is refused</strong> for state models; the per-request barrier always applies, and an opt-out for models that ignore stopped-row echoes is deferred.</li>
   <li><strong>Pending inputs are bounded by credits</strong> (<code>max_pending_stream_inputs</code>, default 8), not by errors.</li>
 </ul>
-        <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop.</p>
+        <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop. Implemented at <code>de0b0bccdb</code> (<code>vllm/v1/engine/core.py:2145-2209</code>): all four rules, with an opener that reuses a held request id ending the held stream with an error.</p>
       </div>
     </div>
   </div>
@@ -716,7 +716,7 @@ flowchart TB
 <table>
 <thead><tr><th>Roadmap item</th><th>Owner, status</th><th>What it means here</th></tr></thead>
 <tbody>
-<tr><td>Extensible KV cache (<a href="https://github.com/vllm-project/vllm/pull/56492">#56492</a>)</td><td>SIG Core, done</td><td>Block addresses never move, so CUDA graphs can capture state pages; the proposal can rely on it.</td></tr>
+<tr><td>Extensible KV cache (<a href="https://github.com/vllm-project/vllm/pull/56492">#56492</a>)</td><td>SIG Core, done</td><td>Block addresses never move as the cache grows. A graph captured over state pages addresses block 0 at capture and reaches each stream's page by block id at replay, so growth needs no recapture (PSTATE-PREP-010).</td></tr>
 <tr><td>Pluggable <code>KVCacheConfigBuilder</code> and model-declared grouping</td><td>SIG Core, done (experimental interface)</td><td>A state group and its sizing policy can be declared without a special case in core.</td></tr>
 <tr><td>Simplify and harden the scheduler; improve streaming-input reliability</td><td>SIG Core, open</td><td>The natural home for PF-7's admission, <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> and <a href="https://github.com/vllm-project/vllm/pull/59339">#59339</a>. A broader scheduler redesign is listed as aspirational.</td></tr>
 <tr><td>Model Runner V2 default; V1 removed</td><td>SIG Core, done</td><td>Bounded and resident sessions already target V2; the proposal's in-place resume would change V2's row lifecycle.</td></tr>
@@ -798,7 +798,7 @@ flowchart TB
 <tr><td>State-applied watermark</td><td>a model parks on a length stop, replays its last reply token and keeps async overlap</td><td>a per-request count of tokens the state already includes; tokens below it skip the state layers</td></tr>
 <tr><td>Exactly-once by input identity</td><td>a model with one sampled token per frame, such as PersonaPlex's Stage 0, needs async overlap</td><td>state advances only for a new input identity (epoch, seq); valid only for state that advances from new input alone</td></tr>
 <tr><td>In-place resume</td><td>a consumer needs O(1) resume transfer or keeps per-row worker state across turns</td><td>a worker turn transition that keeps the row</td></tr>
-<tr><td>Tensor and data parallelism above 1</td><td>a state model needs more than one GPU, or a stage runs behind a data-parallel client</td><td>replicated state, with failure reports agreed across ranks; admission rides the opening request, which a data-parallel client routes to one engine</td></tr>
+<tr><td>Tensor and data parallelism above 1</td><td>TP above 1 is required and not yet scheduled (all sizes are 1 today); DP when a stage runs behind a data-parallel client</td><td>replicated state, with failure reports agreed across ranks; admission rides the opening request, which a data-parallel client routes to one engine</td></tr>
 <tr><td>Per-group retention</td><td>a hybrid or full-duplex model runs past <code>max_model_len</code>, or must keep context across barge-in</td><td>one turn transition with a retention policy per KV group, plus a reconstruction policy for re-prefill</td></tr>
 </tbody>
 </table>
@@ -826,7 +826,7 @@ flowchart TB
 <tbody>
 <tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head <code>dc3d58ccc5</code></td></tr>
 <tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code></td></tr>
-<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>f24c53bca8</code></td></tr>
+<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>de0b0bccdb</code></td></tr>
 <tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head <code>015eb5e212</code></td></tr>
 <tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head <code>665cc58c15</code></td></tr>
 <tr><td>Upstream, design citations</td><td>vLLM main <code>07e4d6b957</code></td></tr>
@@ -842,7 +842,7 @@ flowchart TB
   <li>The sleep-and-wake case is verified link by link but was not run end to end.</li>
   <li>Bounded sessions refuse PP and DP above 1; "TP only" rests on there being no TP check.</li>
   <li>Voxtral's turns ending on a length stop is inferred from <code>realtime_max_tokens = 1</code>, not observed.</li>
-  <li>The proposal's column describes the design. Its implementation has not run on a GPU since the rules were simplified, so its green cells are targets, not results.</li>
+  <li>The proposal's column describes the design. Its GPU tests pass (an A40 at <code>ddf6db2ab8</code>, an L40S at <code>de0b0bccdb</code>), but no acceptance run (PSTATE-ACC-001 to ACC-004) has happened, so its other green cells are targets, not results. The plugin arms wait for the plugin to capture from the state-group layout and to accept core's graph capture. Runner graphs with <code>torch.compile</code> on, a guaranteed fold in a GPU stream, batch invariance and chunked prefill of a state request are untested.</li>
   <li>TensorRT-LLM rests on its published documentation, not on code read for this guide.</li>
   <li>The full-duplex PF-4 overlap cost and the preemption hazard for Omni sessions are inferences; nothing was run.</li>
   <li>PR 6 line numbers were not re-checked against main; where main has moved, a rebase will shift them.</li>
