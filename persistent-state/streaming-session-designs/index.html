@@ -211,14 +211,15 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="production">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">2026-11-23 &middot; Production design</p>
+      <p class="eyebrow">2026-11-25 &middot; Production design</p>
       <h2>The production design keeps PR 6's state layer and closes each gap with a stated rule</h2>
     </div>
     <div class="col stack">
       <p>The rules are EARS specs with the prefix PSTATE. The implementation is pdtgct/vllm branch
-        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>f24c53bca8</code>: upstream <code>main</code>
-        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,045 / &minus;56
-        lines under <code>vllm/</code> in 32 files. No commit after <code>7ba8f7d403</code> has run on a GPU. The rest of
+        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>de0b0bccdb</code>: upstream <code>main</code>
+        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,729 / &minus;86
+        lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases,
+        2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). The rest of
         this page records the 2026-11-20 analysis that led to this design.</p>
     </div>
     <div class="table-box">
@@ -426,7 +427,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             retained KV depends on evicted history (<code>request.py:256</code>), so its consolidation establishes a new
             continuation state.</p>
           <p>TP needs a stated state-ownership rule, sharded or replicated (<code>is_kv_cache_tp_replicated</code>,
-            <code>abstract.py:65</code> at PR 6's head); until one exists, TP stays outside the supported scope.</p>
+            <code>abstract.py:65</code> at PR 6's head); until one exists, TP stays outside the supported scope. The production design keeps TP at 1 today; TP above 1 is required and on the roadmap.</p>
           <p>Sliding-window groups do not reduce to "the last window of tokens". A surviving KV entry can depend on earlier
             inputs through earlier layers, so it needs its own reconstruction rule. The same holds for attention interleaved
             with state that cannot be rebuilt.</p>
@@ -472,7 +473,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <ul class="plain">
           <li>The model reports a recoverable failure for identified requests, as <code>StateSlotBindings.fail_requests</code> does in #67374 (<code>state_slots.py:219-227</code> at <code>2e7dfe972b</code>).</li>
           <li>Core retires those requests safely. The rule must define partial writes and completion identity.</li>
-          <li>A request that would need preemption of a group that is not reconstructible fails with an error instead of raising.</li>
+          <li>A request that would need preemption of a group that is not reconstructible fails with an error instead of raising. The production design instead never preempts a state request; it waits (PSTATE-PRES-001).</li>
         </ul>
         <p>The rule covers B1 for reported failures. It does not recover from arbitrary Python or CUDA exceptions, which
           stay fatal (<code>engine/core.py:1769-1775</code> at PR 6's head).</p>

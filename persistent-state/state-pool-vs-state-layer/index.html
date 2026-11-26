@@ -174,14 +174,15 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="production">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">2026-11-23 &middot; Production design</p>
+      <p class="eyebrow">2026-11-25 &middot; Production design</p>
       <h2>The production design keeps PR 6's state layer and closes each gap with a stated rule</h2>
     </div>
     <div class="col stack">
       <p>The rules are EARS specs with the prefix PSTATE. The implementation is pdtgct/vllm branch
-        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>f24c53bca8</code>: upstream <code>main</code>
-        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,045 / &minus;56
-        lines under <code>vllm/</code> in 32 files. No commit after <code>7ba8f7d403</code> has run on a GPU. The rest of
+        <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at <code>de0b0bccdb</code>: upstream <code>main</code>
+        <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and the B2 fix, +1,729 / &minus;86
+        lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases,
+        2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). The rest of
         this page records the 2026-11-20 analysis that led to this design.</p>
     </div>
     <div class="table-box">
