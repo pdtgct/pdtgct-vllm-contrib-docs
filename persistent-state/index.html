@@ -120,20 +120,6 @@ tr.group td { background: var(--bg); font-weight: 600; font-size: 0.82rem; lette
 .cmp .ps { border-top: 4px solid var(--state); }
 .cmp ul { margin: 0; padding-left: 1.1rem; font-size: 0.93rem; display: flex; flex-direction: column; gap: 0.3rem; }
 
-/* bar chart */
-.bars { display: flex; flex-direction: column; gap: 0.55rem; }
-.bar-row { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.75rem; align-items: center; }
-.bar-row .lab { font: 500 0.85rem/1.2 var(--f-mono); }
-.bar-row .lab small { display: block; font-family: var(--f-body); font-weight: 400; color: var(--muted); font-size: 0.74rem; }
-.bar { display: flex; height: 1.15rem; min-width: 0; }
-.bar i { display: block; height: 100%; }
-.bar .src { background: var(--accent); }
-.bar .tst { background: var(--tests); }
-.bar .doc { background: var(--docs); }
-.bar-row .fig { grid-column: 2; font: 0.78rem/1.3 var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; margin-top: -0.25rem; }
-.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; font-size: 0.82rem; color: var(--muted); margin-top: 0.8rem; }
-.legend i { display: inline-block; width: 0.8rem; height: 0.8rem; vertical-align: -0.1rem; margin-right: 0.35rem; border-radius: 2px; }
-@media (max-width: 30rem) { .bar-row { grid-template-columns: 1fr; gap: 0.25rem; } .bar-row .fig { grid-column: 1; } }
 
 /* merge order */
 ol.order { list-style: none; margin: 0; padding: 0; counter-reset: step; display: flex; flex-direction: column; gap: 0.9rem; }
@@ -173,18 +159,18 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 
 <header class="top">
   <div class="wrap">
-    <p class="eyebrow">vLLM review guide &middot; state read 2026-11-17; status 2026-11-27</p>
+    <p class="eyebrow">vLLM review guide &middot; status 2026-11-27</p>
     <h1>Engine-managed persistent state for streaming models</h1>
     <p class="lede">vLLM keeps state that it can rebuild from tokens. A growing set of streaming audio,
       speech and video models carry state that comes from their input and cannot be rebuilt. Three RFCs
-      and ten pull requests add that capability in small, opt-in steps. This page explains the gap,
-      lists the models that need the capability, and walks through each pull request in the order we
-      ask you to review it.</p>
+      add that capability in small, opt-in steps. This page explains the gap, lists the models that need
+      the capability, and walks through each pull request in the order we ask you to review it.
+      <a href="landscape/">A maintainer's guide to the landscape</a> carries the detailed analysis.</p>
     <div class="ask">
-      <div><b>Review in order</b><span>Seven pull requests make up the two serving stages. Two short bug fixes come first.</span></div>
-      <div><b>Small source changes</b><span>About 4,100 lines of non-test source across all ten pull requests. Tests and design docs make up the other 77 % of the 17,791 added lines.</span></div>
+      <div><b>Review in order</b><span>Eight pull requests to review, in five independent steps. Two short bug fixes come first.</span></div>
+      <div><b>Small source changes</b><span>About 1,020 lines of non-test source across the eight. The RFC 1 state layer, not yet a pull request, adds 1,785 lines under <code>vllm/</code>.</span></div>
       <div><b>Opt-in</b><span>Models that do not declare persistent state run the same code paths as today.</span></div>
-      <div><b>Run CI</b><span>No vLLM CI has run: <code>pre-run-check</code> waits for a <code>ready</code> or <code>verified</code> label.</span></div>
+      <div><b>Run CI</b><span>No Buildkite run is reported on any of them: <code>pre-run-check</code> waits for a <code>ready</code> or <code>verified</code> label.</span></div>
     </div>
     <nav class="toc" aria-label="Sections">
       <a href="#gap">The gap</a>
@@ -222,8 +208,8 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           carries encoder attention and convolution caches, predictor state and decoding progress from one
           audio chunk to the next. That state derives from audio that the server no longer holds. The
           transcript cannot reconstruct it. The engine must keep the state resident between the inputs of
-          a stream. It must also hold the memory until every GPU write to it has finished, because a late
-          write would otherwise land in the next session's state.</p>
+          a stream. It must also order every access by a page's previous owner before the next owner's first
+          access, because a late write would otherwise land in the next session's state.</p>
       </div>
 
       <div class="cmp" role="list">
@@ -248,10 +234,10 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <div class="ps" role="listitem">
           <h3>Persistent state (RFC 1)</h3>
           <ul>
-            <li>One fixed-size page of model-declared tensors per session</li>
+            <li>One fixed-size page per session, in a Mamba-style group marked not rebuildable</li>
             <li>Derived from input audio, so no replay exists</li>
-            <li>Reserved before the first input; kept between inputs</li>
-            <li>Reusable only after the worker acknowledges the last write</li>
+            <li>Admitted with the opening request; kept between inputs</li>
+            <li>Reused only after the previous owner's accesses are ordered</li>
           </ul>
         </div>
       </div>
@@ -260,7 +246,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <div class="scroll">
           <svg viewBox="0 0 960 250" width="100%" style="min-width:640px" role="img" aria-labelledby="lifeT lifeD">
             <title id="lifeT">Lifetime of one persistent-state session</title>
-            <desc id="lifeD">A session is admitted and reserves a state page before audio arrives. The page stays assigned through each audio chunk and each wait for more input. When the session ends, the page is retired and stays unavailable until the worker acknowledges that all writes finished; then it returns to the pool.</desc>
+            <desc id="lifeD">A session is admitted or refused with its opening request. Its state page stays assigned through each audio chunk and each wait for more input. When the session ends, the page is freed and is reused only after every access by the ended session is ordered before the next owner's first access.</desc>
             <!-- time axis -->
             <line x1="40" y1="200" x2="930" y2="200" stroke="var(--rule)" stroke-width="1.5"/>
             <text x="930" y="194" text-anchor="end" font-size="12" fill="var(--muted)">time</text>
@@ -277,29 +263,29 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             <rect x="110" y="130" width="640" height="30" rx="3" fill="var(--state-soft)" stroke="var(--state)"/>
             <rect x="750" y="130" width="90" height="30" rx="3" fill="var(--surface)" stroke="var(--state)" stroke-dasharray="4 3"/>
             <text x="430" y="150" text-anchor="middle" font-size="13" fill="var(--ink)">assigned to the session, also while it waits for input</text>
-            <text x="795" y="150" text-anchor="middle" font-size="12" fill="var(--ink)">retired</text>
+            <text x="795" y="150" text-anchor="middle" font-size="12" fill="var(--ink)">freed</text>
             <!-- events -->
             <g font-size="12" fill="var(--ink)">
               <line x1="110" y1="125" x2="110" y2="200" stroke="var(--accent)" stroke-width="2"/>
               <circle cx="110" cy="200" r="4" fill="var(--accent)"/>
-              <text x="110" y="222" text-anchor="middle">admit_stream</text>
-              <text x="110" y="238" text-anchor="middle" fill="var(--muted)">reserve or refuse</text>
+              <text x="110" y="222" text-anchor="middle">open</text>
+              <text x="110" y="238" text-anchor="middle" fill="var(--muted)">admit or refuse</text>
               <text x="365" y="190" text-anchor="middle" fill="var(--muted)">parked</text>
               <text x="560" y="190" text-anchor="middle" fill="var(--muted)">parked</text>
               <line x1="750" y1="125" x2="750" y2="200" stroke="var(--state)" stroke-width="2"/>
               <circle cx="750" cy="200" r="4" fill="var(--state)"/>
-              <text x="750" y="222" text-anchor="middle">session ends</text>
+              <text x="750" y="222" text-anchor="middle">close or abort</text>
               <line x1="840" y1="125" x2="840" y2="200" stroke="var(--ok)" stroke-width="2"/>
               <circle cx="840" cy="200" r="4" fill="var(--ok)"/>
-              <text x="944" y="222" text-anchor="end">worker ack</text>
+              <text x="944" y="222" text-anchor="end">accesses ordered</text>
               <text x="944" y="238" text-anchor="end" fill="var(--muted)">page reusable</text>
             </g>
           </svg>
         </div>
-        <figcaption>One session's state page. The scheduler reserves the page at admission, keeps it while the
-          session waits between inputs, and returns it to the pool only after the worker acknowledges that the
-          writes and cleanup of the last step finished (the release fence). The design document in
-          <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> describes the API and the failure handling.</figcaption>
+        <figcaption>One session's state page. Admission counts the page and the worker row when the stream opens,
+          the page stays assigned while the session waits between inputs, and a new owner reads the page only
+          after every access by the previous owner is ordered before it (PF-3). The landscape guide traces
+          <a href="landscape/#lifetime">one session's lifetime</a> through each layer.</figcaption>
       </figure>
     </div>
   </div>
@@ -348,7 +334,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <p><a href="https://github.com/vllm-project/vllm-omni/issues/6453">vllm-omni#6453</a> counts at least
           ten vLLM-Omni models that each manage per-request codec or stage state in a shared dictionary, each
           with its own keying, cleanup and failure handling. It cites a state leak fixed in vllm-omni#5556 and
-          asks for a runtime-owned lifecycle. RFC 1 gives that lifecycle a single owner: the scheduler.</p>
+          asks for a runtime-owned lifecycle. RFC 1 gives that lifecycle a single owner: the engine core.</p>
         <p>Users ask for the capability in vLLM issues as well:</p>
         <ul class="stack" style="gap:0.35rem;margin:0;padding-left:1.2rem">
           <li><a href="https://github.com/vllm-project/vllm/issues/47455">#47455</a> requests streaming Nemotron 3.5 ASR.</li>
@@ -358,7 +344,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         </ul>
         <p class="muted">Token-derived recurrent models are not part of this gap.
           <a href="https://github.com/vllm-project/vllm/pull/50077">RWKV-7 (#50077)</a> uses the existing Mamba
-          state path, and RFC 1 leaves that path unchanged.</p>
+          state path, and every RFC 1 rule applies only to a model that declares persistent state.</p>
+        <p class="muted">The landscape guide gives <a href="landscape/#guidance">guidance per use case</a>,
+          including hybrid models and full-duplex speech on vLLM-Omni.</p>
       </div>
     </div>
   </div>
@@ -369,108 +357,36 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
   <div class="wrap">
     <div class="head col">
       <p class="eyebrow">3 &middot; The change set</p>
-      <h2>Ten pull requests, each with a narrow source change</h2>
+      <h2>Eight open pull requests, each with a narrow source change</h2>
       <p>Each RFC lands as a short stack of pull requests. A stacked pull request lists its own commits,
         and you review only those. Most of each change is tests and design documentation.</p>
     </div>
     <div class="stack-lg">
-      <figure>
-        <div class="scroll">
-          <svg viewBox="0 0 960 330" width="100%" style="min-width:680px" role="img" aria-labelledby="depT depD">
-            <title id="depT">Pull request dependency graph</title>
-            <desc id="depD">Four lanes. Speech-to-text fixes: 67144 then 67151, and 67139 alone. RFC 1: 67374 then 67375 then 67583. RFC 2: 65546 then 67294. RFC 3, drafts: vllm 65549 then vllm-omni 9849.</desc>
-            <defs>
-              <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
-            </defs>
-            <g font-size="12" fill="var(--muted)" font-weight="600">
-              <text x="16" y="52">SPEECH-TO-TEXT FIXES</text>
-              <text x="16" y="132">RFC 1 &#183; PERSISTENT STATE</text>
-              <text x="16" y="212">RFC 2 &#183; PLUGIN LIFECYCLE</text>
-              <text x="16" y="292">RFC 3 &#183; OMNI (DRAFTS)</text>
-            </g>
-            <g stroke="var(--rule)"><line x1="16" y1="90" x2="944" y2="90"/><line x1="16" y1="170" x2="944" y2="170"/><line x1="16" y1="250" x2="944" y2="250"/></g>
-            <!-- boxes: x, width 150, height 44 -->
-            <g font-size="13">
-              <!-- lane 1 -->
-              <rect x="230" y="26" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
-              <text x="305" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67144</text>
-              <text x="305" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">26 source lines</text>
-              <rect x="440" y="26" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
-              <text x="515" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67151</text>
-              <text x="515" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">67 source lines</text>
-              <rect x="700" y="26" width="150" height="46" rx="4" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="4 3"/>
-              <text x="775" y="45" text-anchor="middle" fill="var(--ink)" font-weight="600">#67139</text>
-              <text x="775" y="62" text-anchor="middle" fill="var(--muted)" font-size="11">11 source lines</text>
-              <!-- lane 2 -->
-              <rect x="230" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
-              <text x="305" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67374</text>
-              <text x="305" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">1,531 source lines</text>
-              <rect x="440" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
-              <text x="515" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67375</text>
-              <text x="515" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">1,527 source lines</text>
-              <rect x="650" y="106" width="150" height="46" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
-              <text x="725" y="125" text-anchor="middle" fill="var(--ink)" font-weight="600">#67583</text>
-              <text x="725" y="142" text-anchor="middle" fill="var(--muted)" font-size="11">385 source lines</text>
-              <!-- lane 3 -->
-              <rect x="230" y="186" width="150" height="46" rx="4" fill="var(--kv-soft)" stroke="var(--kv)"/>
-              <text x="305" y="205" text-anchor="middle" fill="var(--ink)" font-weight="600">#65546</text>
-              <text x="305" y="222" text-anchor="middle" fill="var(--muted)" font-size="11">309 source lines</text>
-              <rect x="440" y="186" width="150" height="46" rx="4" fill="var(--kv-soft)" stroke="var(--kv)"/>
-              <text x="515" y="205" text-anchor="middle" fill="var(--ink)" font-weight="600">#67294</text>
-              <text x="515" y="222" text-anchor="middle" fill="var(--muted)" font-size="11">209 source lines</text>
-              <!-- lane 4 -->
-              <rect x="230" y="266" width="150" height="46" rx="4" fill="var(--code-bg)" stroke="var(--muted)" stroke-dasharray="4 3"/>
-              <text x="305" y="285" text-anchor="middle" fill="var(--ink)" font-weight="600">vllm#65549</text>
-              <text x="305" y="302" text-anchor="middle" fill="var(--muted)" font-size="11">11 source lines</text>
-              <rect x="440" y="266" width="150" height="46" rx="4" fill="var(--code-bg)" stroke="var(--muted)" stroke-dasharray="4 3"/>
-              <text x="515" y="285" text-anchor="middle" fill="var(--ink)" font-weight="600">omni#9849</text>
-              <text x="515" y="302" text-anchor="middle" fill="var(--muted)" font-size="11">51 source lines</text>
-            </g>
-            <g stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#arr)">
-              <line x1="380" y1="49" x2="436" y2="49"/>
-              <line x1="380" y1="129" x2="436" y2="129"/>
-              <line x1="590" y1="129" x2="646" y2="129"/>
-              <line x1="380" y1="209" x2="436" y2="209"/>
-              <line x1="380" y1="289" x2="436" y2="289"/>
-            </g>
-            <g font-size="11" fill="var(--muted)">
-              <text x="636" y="45">independent</text>
-            </g>
-          </svg>
-        </div>
-        <div class="legend">
-          <span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>stage 1: the model alone</span>
-          <span><i style="background:var(--kv-soft);border:1px solid var(--kv)"></i>stage 2: adds a frontend plugin</span>
-                    <span><i style="background:var(--code-bg);border:1px dashed var(--muted)"></i>draft or optional</span>
-        </div>
-        <figcaption>An arrow points from a pull request to the one stacked on it. "Source lines" counts added lines
-          outside <code>tests/</code> and <code>docs/</code> in the pull request's own commits.</figcaption>
-      </figure>
-
-      <figure>
-        <div class="bars" role="img" aria-label="Added lines per pull request, split into source, tests and docs">
-          <!-- scale: 6,133 added lines (#67375) = 100% -->
-          <div class="bar-row"><span class="lab">#67374<small>RFC 1</small></span><span class="bar"><i class="src" style="width:24.96%"></i><i class="tst" style="width:46.86%"></i><i class="doc" style="width:5.33%"></i></span><span class="fig">source 1,531 &middot; tests 2,874 &middot; docs 327</span></div>
-          <div class="bar-row"><span class="lab">#67375<small>RFC 1</small></span><span class="bar"><i class="src" style="width:24.90%"></i><i class="tst" style="width:65.81%"></i><i class="doc" style="width:9.29%"></i></span><span class="fig">source 1,527 &middot; tests 4,036 &middot; docs 570</span></div>
-          <div class="bar-row"><span class="lab">#67583<small>RFC 1</small></span><span class="bar"><i class="src" style="width:6.28%"></i><i class="tst" style="width:48.70%"></i><i class="doc" style="width:8.89%"></i></span><span class="fig">source 385 &middot; tests 2,987 &middot; docs 545</span></div>
-          <div class="bar-row"><span class="lab">#65546<small>RFC 2</small></span><span class="bar"><i class="src" style="width:5.04%"></i><i class="tst" style="width:10.52%"></i><i class="doc" style="width:0.78%"></i></span><span class="fig">source 309 &middot; tests 645 &middot; docs 48</span></div>
-          <div class="bar-row"><span class="lab">#67294<small>RFC 2</small></span><span class="bar"><i class="src" style="width:3.41%"></i><i class="tst" style="width:11.87%"></i><i class="doc" style="width:0.64%"></i></span><span class="fig">source 209 &middot; tests 728 &middot; docs 39</span></div>
-          <div class="bar-row"><span class="lab">#67144<small>fix</small></span><span class="bar"><i class="src" style="width:0.42%"></i><i class="tst" style="width:6.69%"></i><i class="doc" style="width:0.20%"></i></span><span class="fig">source 26 &middot; tests 410 &middot; docs 12</span></div>
-          <div class="bar-row"><span class="lab">#67151<small>fix</small></span><span class="bar"><i class="src" style="width:1.09%"></i><i class="tst" style="width:2.56%"></i><i class="doc" style="width:0.20%"></i></span><span class="fig">source 67 &middot; tests 157 &middot; docs 12</span></div>
-          <div class="bar-row"><span class="lab">#67139<small>fix</small></span><span class="bar"><i class="src" style="width:0.18%"></i><i class="tst" style="width:3.03%"></i></span><span class="fig">source 11 &middot; tests 186</span></div>
-          <div class="bar-row"><span class="lab">vllm#65549<small>RFC 3, draft</small></span><span class="bar"><i class="src" style="width:0.18%"></i></span><span class="fig">source 11</span></div>
-          <div class="bar-row"><span class="lab">omni#9849<small>RFC 3, draft</small></span><span class="bar"><i class="src" style="width:0.83%"></i><i class="tst" style="width:1.43%"></i></span><span class="fig">source 51 &middot; tests 88</span></div>
-        </div>
-        <div class="legend">
-          <span><i style="background:var(--accent)"></i>source</span>
-          <span><i style="background:var(--tests)"></i>tests</span>
-          <span><i style="background:var(--docs)"></i>docs</span>
-        </div>
-        <figcaption>Added lines in each pull request's own commits, drawn to one scale (the full width is 6,133
-          lines, #67375's total). Counted from the GitHub compare API on 2026-11-17: a stacked pull request's own diff is
-          the compare between its parent's head and its own head. Deleted lines are not drawn; no pull request
-          deletes more than 135.</figcaption>
-      </figure>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Pull request</th><th>Part</th><th>Stacked on</th><th class="num">Source</th><th class="num">Tests</th><th class="num">Docs</th></tr></thead>
+          <tbody>
+            <tr class="group"><td colspan="6">Speech-to-text fixes</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67144">#67144</a></td><td>fix</td><td>main</td><td class="num">26</td><td class="num">410</td><td class="num">12</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67151">#67151</a></td><td>fix</td><td>#67144</td><td class="num">67</td><td class="num">157</td><td class="num">12</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67139">#67139</a></td><td>fix</td><td>main</td><td class="num">11</td><td class="num">186</td><td class="num">0</td></tr>
+            <tr class="group"><td colspan="6">RFC 1 &middot; persistent state (stage 1)</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>model hooks, hooks-only re-cut</td><td>main</td><td class="num">169</td><td class="num">1,062</td><td class="num">13</td></tr>
+            <tr><td>State layer (not opened)</td><td>PR 6 plus PF-1 to PF-9</td><td>#67583</td><td class="num" colspan="3">1,785 under <code>vllm/</code>, see <a href="#rfc1">RFC 1</a></td></tr>
+            <tr class="group"><td colspan="6">RFC 2 &middot; endpoint plugin lifecycle (stage 2)</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a></td><td>start and stop</td><td>main</td><td class="num">429</td><td class="num">1,044</td><td class="num">55</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>readiness and draining</td><td>#65546</td><td class="num">256</td><td class="num">757</td><td class="num">43</td></tr>
+            <tr class="group"><td colspan="6">RFC 3 &middot; vLLM-Omni on Model Runner V2</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a></td><td>runner method</td><td>main</td><td class="num">11</td><td class="num">0</td><td class="num">0</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Omni runner override</td><td>vllm#65549</td><td class="num">51</td><td class="num">88</td><td class="num">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="col muted" style="font-size:0.88rem">Added lines in each pull request's own commits. "Source" counts
+        lines outside <code>tests/</code> and <code>docs/</code>. Counted from the GitHub API on 2026-11-27, except
+        #67151 and omni#9849 (2026-11-17). #67583's row counts the hooks-only re-cut on pdtgct/vllm branch
+        <a href="https://github.com/pdtgct/vllm/tree/recut-67583-hooks-20261124"><code>recut-67583-hooks-20261124</code></a>
+        (<code>81b7f7c8c8</code>); the pull request itself still shows its earlier stacked form.</p>
     </div>
   </div>
 </section>
@@ -487,17 +403,16 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
     <ol class="order col">
       <li><div><b>#67144, then #67151.</b> Two speech-to-text fixes, 93 source lines together. Stage 1 needs
         #67151: without its two request fields, the model cannot refuse beam search.</div></li>
-      <li><div><b>#67374, then #67375, then #67583.</b> The state pool, scheduling, release fence, stream
-        admission and model hooks: the core of stage 1. In #67375 review its last three commits, and in #67583
-        its last two. The current plugin release requires #67583's hooks, which let a persistent-state model
-        capture its own CUDA graphs.</div></li>
+      <li><div><b>#67583, then the state-layer pull request.</b> The six model hooks come first; the current
+        plugin release requires them to capture its own CUDA graphs. The state-layer pull request is the core
+        of stage 1. It has not opened; until it does, review the design on the
+        <a href="landscape/#requirements">nine requirements</a> and the branch named under <a href="#rfc1">RFC 1</a>.</div></li>
       <li><div><b>#65546, then #67294.</b> Endpoint plugin start, stop, readiness and drain. These are the core
         of stage 2. A frontend plugin works with #65546 alone; #67294 adds <code>/ready</code> and
         coordinated draining.</div></li>
       <li><div><b>#67139.</b> An independent fix that refuses new <code>/v1/realtime</code> sessions during
         shutdown. Merge it at any time.</div></li>
-      <li><div><b>vllm#65549, then vllm-omni#9849.</b> RFC 3. Both are drafts until vLLM-Omni catches up with
-        vLLM <code>main</code>; only vLLM-Omni serving depends on them.</div></li>
+      <li><div><b>vllm#65549, then vllm-omni#9849.</b> RFC 3. Only vLLM-Omni serving depends on them.</div></li>
     </ol>
   </div>
 </section>
@@ -507,89 +422,87 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
   <div class="wrap">
     <div class="head col">
       <p class="eyebrow">5 &middot; RFC 1 &middot; <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a></p>
-      <h2>Scheduler-owned persistent state</h2>
+      <h2>Persistent state as a state layer, with nine rules</h2>
     </div>
     <div class="stack-lg">
       <div class="col stack rfc-intro">
-        <p>Core owns the state's lifetime: allocation, admission, scheduling and safe release. The model, in an
-          out-of-tree plugin, owns the computation and the layout. A model declares its page with
-          <code>PersistentStateSpec</code> (tensor shapes, element types, offsets, alignment and initial
-          values). Core allocates the pages from the existing block pool, and the worker exposes typed
-          views of them.</p>
+        <p>Core owns the state's lifetime: allocation, admission, scheduling and safe reuse. The model, in an
+          out-of-tree plugin, owns the computation and the layout. The design has two parts.</p>
+        <p><b>Storage.</b> Lucas Wilkinson's draft <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>
+          ("PR 6") puts each session's state in a Mamba-style group that the normal KV cache allocator owns, a
+          <code>MambaSpec</code> group with <code>recomputable=False</code>. Its core change is +34 / &minus;4 lines
+          under <code>vllm/</code>. A resumed session continues through the upstream streaming-input fold.</p>
+        <p><b>Lifecycle.</b> Nine requirements state what core must add so that state it cannot rebuild survives
+          every path through the engine. The landscape guide gives <a href="landscape/#requirements">their full text</a>.</p>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>ID and name</th><th>Outcome</th></tr></thead>
+          <tbody>
+            <tr><td>PF-1 Declare</td><td>The model declares each state component, that inputs cannot rebuild it, the history it needs and its startup prerequisites.</td></tr>
+            <tr><td>PF-2 Preserve</td><td>Core never preempts, evicts, recomputes, prefix-shares, resets or sleeps away held state, and keeps captured graph addresses valid.</td></tr>
+            <tr><td>PF-3 Bound the page</td><td>A new page holds its initial value before its first read; reuse waits until the previous owner's accesses are ordered.</td></tr>
+            <tr><td>PF-4 Exactly once</td><td>Committed input changes state once and in order; warmup, profiling and capture neither change nor read live state.</td></tr>
+            <tr><td>PF-5 Turn boundary</td><td>A request parks only at a stop the model declares resumable; any other end finishes it.</td></tr>
+            <tr><td>PF-6 Length independence</td><td>Per-turn work and retained host memory in every engine layer are O(new input).</td></tr>
+            <tr><td>PF-7 Account and reclaim</td><td>Admission counts every held resource and refuses at open; the caller owns the stream's lifetime, and the engine core sets no deadline.</td></tr>
+            <tr><td>PF-8 Fail one request</td><td>A failure attributable to one request finishes that request with an error; the others continue.</td></tr>
+            <tr><td>PF-9 Start and resume safely</td><td>Core honors the declared profiling, warmup and capture prerequisites before final page sizing and before serving.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col stack">
+        <p>The implementation is pdtgct/vllm branch
+          <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>,
+          tag <code>pstate-impl-head</code>, head <code>9503e3b878</code>: upstream <code>main</code>
+          <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of #67583 and a fix for
+          <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a>. Against that <code>main</code> it adds
+          +1,785 / &minus;86 lines under <code>vllm/</code> in 34 files, and 9,592 lines of tests. Core meets PF-1 to
+          PF-8 in code and tests; for PF-9 it has the state-group layout accessor and graph capture over block 0.
+          <a href="state-pool-vs-state-layer/#production">Production design</a> maps each gap found in the PR 6 proof
+          of concept to its rule.</p>
         <p>The first consumer is the out-of-tree plugin
           <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin">vllm-nemotron-asr-streaming-plugin</a>.
           Sohaib Ahmad's <a href="https://github.com/vllm-project/vllm/pull/59827">#59827</a> added complete-audio
           transcription for the same checkpoint; the plugin adds streaming sessions, and serves complete files on
           the same server.</p>
-        <p>Lucas Wilkinson's draft <a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a> proposes keeping
-          this state as a Mamba state layer instead of a state pool.
-          <a href="state-pool-vs-state-layer/">State pool vs state layer</a> compares the two designs and reports a
-          port of the plugin onto the draft.
+        <p class="muted">History. RFC 1 first proposed a separate state pool with its own scheduler, in
+          <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> (1,531 source lines) and
+          <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a> (1,527), with the model hooks
+          stacked on them in #67583. The state layer replaced it on 2026-11-21.
+          <a href="state-pool-vs-state-layer/">State pool vs state layer</a> explains why, and
           <a href="streaming-session-designs/">Streaming-session designs</a> compares both with resident sessions in
           <a href="https://github.com/vllm-project/vllm/pull/68539">#68539</a> and bounded sessions in
-          <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>.
-          <a href="landscape/">A maintainer's guide to the landscape</a> explains vLLM's KV cache layout and upstream
-          streaming input, compares the five designs with SGLang, TensorRT-LLM and vLLM-Omni, traces one session's
-          lifetime, and shows how the proposal meets vLLM-Omni full duplex through an engine-core contract.
-          The production implementation builds on the state layer; its rule for each gap is under
-          <a href="state-pool-vs-state-layer/#production">Production design</a>.</p>
-        <div class="note ok">
-          <p><b>Status, 2026-11-27.</b> RFC 1 now builds on PR 6's state layer; #67374, #67375 and #67583 are drafts,
-            and #67374 and #67375 close when the state-layer pull request opens. The implementation is pdtgct/vllm branch
-            <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at
-            <code>9503e3b878</code>, which passed every suite plus four upstream batch-invariance cases on an A40 on
-            2026-11-26 (896 cases, none failed and none skipped). On the state layer the plugin's WER at 320 ms equals
-            the state-pool baseline (2.55 %). The <a href="landscape/#status">landscape</a> gives the full status, the
-            token-budget cost of a large <code>max_model_len</code> and the deployment rule for stream-only servers. The
-            pull request descriptions below record the state-pool design as opened.</p>
-        </div>
+          <a href="https://github.com/vllm-project/vllm/pull/53879">#53879</a>.</p>
       </div>
       <div class="prs">
         <article class="pr">
-          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67374">#67374</a><span class="title">State pool, scheduling and release fence</span><span class="tag s1">stage 1</span></div>
-          <dl>
-            <dt>Adds</dt><dd>A fixed GPU pool of per-request state slots, sized <code>max_num_seqs + 1</code>.
-              <code>StateScheduler</code>, a subclass of <code>Scheduler</code>, binds one slot to a request across
-              steps and across stream inputs. The release fence returns a slot only after the worker's completion
-              event covers the request's last step and cleanup.</dd>
-            <dt>Review</dt><dd>One commit. New files <code>vllm/v1/core/sched/state_scheduler.py</code> and
-              <code>vllm/v1/worker/gpu/state_slots.py</code>; design in <code>docs/design/persistent_state.md</code>.</dd>
-            <dt>Who is affected</dt><dd>Only models that declare <code>supports_persistent_state = True</code>.
-              The pool and <code>StateScheduler</code> exist only when the KV cache layout holds a persistent-state
-              group. Other engines get no-op scheduler hooks and new wire fields with defaults.</dd>
-            <dt>Own diff</dt><dd class="mono">38 files, +4,732 / &minus;31 (source +1,531)</dd>
-          </dl>
-        </article>
-        <article class="pr">
-          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67375">#67375</a><span class="title">Stream admission and admitted streams in AsyncLLM</span><span class="tag s1">stage 1</span></div>
-          <dl>
-            <dt>Adds</dt><dd><code>EngineCore.admit_stream</code>, which reserves a slot before the first input or
-              refuses with a reason (<code>request_id_in_use</code>, <code>capacity</code>, <code>active_limit</code>,
-              <code>engine_paused</code>). <code>AsyncLLM.generate(..., stream_admission=True)</code> feeds inputs,
-              keeps the session open after a rejected input and enforces deadlines from
-              <code>--stream-admission-timeouts</code>. <code>wait_stream_retired</code> and slot counters in
-              <code>SchedulerStats</code> complete it.</dd>
-            <dt>Review</dt><dd>The last three commits: [Doc], [Core] and [Frontend]. Main files:
-              <code>async_llm.py</code>, <code>core_client.py</code>, new <code>stream_admission.py</code>,
-              <code>output_processor.py</code>.</dd>
-            <dt>Who is affected</dt><dd>The existing <code>StreamingInput</code> path is unchanged for engines
-              without persistent state.</dd>
-            <dt>Own diff</dt><dd class="mono">25 files, +6,133 / &minus;135 (source +1,527)</dd>
-          </dl>
-        </article>
-        <article class="pr">
-          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67583">#67583</a><span class="title">Model hooks for CUDA graph capture, warmup, shutdown and memory contributors</span><span class="tag s1">stage 1</span></div>
+          <div class="pr-head"><a class="num" href="https://github.com/vllm-project/vllm/pull/67583">#67583</a><span class="title">Model Runner V2: model-state graphs and lifecycle hooks</span><span class="tag s1">stage 1</span></div>
           <dl>
             <dt>Adds</dt><dd>Six <code>ModelState</code> hooks: <code>needs_cudagraph_capture</code>,
               <code>capture_cudagraphs</code>, <code>clear_cudagraphs</code>, <code>prepare_execution_memory</code>,
               <code>post_warmup</code> and <code>shutdown</code>. A persistent-state model uses them to capture its
               own CUDA graphs over its state pages, inside core's graph-memory estimate, and to budget its execution
               memory before core sizes the KV cache.</dd>
-            <dt>Review</dt><dd>The last two commits. Source is about 385 lines across <code>model_runner.py</code>,
-              <code>state_slots.py</code>, <code>cudagraph_utils.py</code> and <code>model_states/interface.py</code>.</dd>
+            <dt>Review</dt><dd>The hooks-only re-cut: two commits, [Doc] and [Core], on
+              <a href="https://github.com/pdtgct/vllm/tree/recut-67583-hooks-20261124"><code>recut-67583-hooks-20261124</code></a>.
+              Source is in <code>model_runner.py</code>, <code>cudagraph_utils.py</code>,
+              <code>model_states/interface.py</code> and <code>gpu_worker.py</code>. The pull request still shows its
+              earlier form, stacked on the state pool, until the re-cut is pushed.</dd>
             <dt>Who is affected</dt><dd>Nobody else: every hook defaults to a no-op, and the capture predicate
               defaults to <code>False</code>.</dd>
-            <dt>Own diff</dt><dd class="mono">20 files, +3,917 / &minus;53 (source +385)</dd>
+            <dt>Own diff</dt><dd class="mono">10 files, +1,244 / &minus;22 (source +169)</dd>
+          </dl>
+        </article>
+        <article class="pr">
+          <div class="pr-head"><span class="num">State layer</span><span class="title">PR 6 plus PF-1 to PF-9</span><span class="tag s1">stage 1</span></div>
+          <dl>
+            <dt>State</dt><dd>Not opened. The acceptance runs ACC-001 to ACC-004 come first.</dd>
+            <dt>Who is affected</dt><dd>Only models that declare persistent state: every rule keys on a PF-1
+              declaration.</dd>
+            <dt>Read now</dt><dd><a href="landscape/#designs">The five designs</a>,
+              <a href="landscape/#status">where the proposal stands</a> and
+              <a href="landscape/#lifetime">where the rules attach</a>.</dd>
           </dl>
         </article>
       </div>
@@ -626,9 +539,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             <dt>Who is affected</dt><dd>Plugins without <code>start</code> or <code>stop</code> are unchanged. Two
               changes reach every server: a repeated SIGINT or SIGTERM now exits once the engine has stopped, and a
               failed startup on Uvicorn below 0.50 exits with status 3 instead of 0.</dd>
-            <dt>Review state</dt><dd>An automated review reported "Nothing blocking" on 2026-11-16, at a
-              maintainer's request. No human review yet.</dd>
-            <dt>Own diff</dt><dd class="mono">13 files, +1,002 / &minus;34 (source +309)</dd>
+            <dt>Review state</dt><dd>A maintainer requested changes on 2026-11-19 and added the <code>verified</code>
+              label; new commits followed on 2026-11-21.</dd>
+            <dt>Own diff</dt><dd class="mono">13 files, +1,528 / &minus;31 (source +429)</dd>
           </dl>
         </article>
         <article class="pr">
@@ -639,10 +552,10 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
               plugin is not ready. On shutdown, core sets <code>state.draining</code> and runs plugin drains
               concurrently under the <code>--shutdown-timeout</code> deadline, before engine shutdown.</dd>
             <dt>Review</dt><dd>Stacked on #65546, which it merges rather than rebases; its own diff starts at
-              #65546's head <code>7e2031fcc5</code>.</dd>
+              #65546's head <code>94da6c7187</code>.</dd>
             <dt>Who is affected</dt><dd><code>/health</code> and <code>/ping</code> are unchanged.
               <code>/ready</code> is a new endpoint; the Kubernetes docs point readiness probes at it.</dd>
-            <dt>Own diff</dt><dd class="mono">13 files, +976 / &minus;60 (source +209)</dd>
+            <dt>Own diff</dt><dd class="mono">16 files, +1,056 / &minus;34 (source +256)</dd>
           </dl>
         </article>
       </div>
@@ -696,7 +609,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         MRv2 runner subclass can supply its own <code>ModelState</code> without patching a module-level factory.
         The default method calls the same factory with the same arguments.
         <a href="https://github.com/vllm-project/vllm-omni/pull/9849">vllm-omni#9849</a> overrides it in
-        <code>OmniGPUModelRunner</code>. Both stay drafts until vLLM-Omni catches up with vLLM <code>main</code>.</p>
+        <code>OmniGPUModelRunner</code>. Both are ready for review and mergeable.</p>
+      <p>The landscape guide shows how the RFC 1 rules meet <a href="landscape/#duplex">vLLM-Omni full duplex</a>
+        through an engine-core contract that holds for every engine-core client.</p>
     </div>
   </div>
 </section>
@@ -706,35 +621,33 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
   <div class="wrap">
     <div class="head col">
       <p class="eyebrow">9 &middot; Evidence</p>
-      <h2>Measured on a stage 1 build with the first consumer</h2>
+      <h2>Measured on the state-layer branch with the first consumer</h2>
     </div>
     <div class="stack-lg">
-      <div class="col stack">
-        <p>The stage 1 build is vLLM <code>main</code> with the RFC 1 pull requests, #67144 and #67151 merged on a
-          fork branch (<a href="https://github.com/pdtgct/vllm/tree/hook-build-20261114b"><code>hook-build-20261114b</code></a>
-          at <code>9c40a6ffd6</code>). On one NVIDIA A40 at FP32, with the plugin's default 320 ms lookahead,
-          CUDA graphs captured through #67583's hooks, and <code>--max-num-seqs 64</code>:</p>
-      </div>
       <div class="table-box">
         <table>
-          <thead><tr><th>Run</th><th class="num">Sessions</th><th class="num">Concurrency</th><th>Result</th></tr></thead>
+          <thead><tr><th>Check</th><th>Build</th><th>Result</th></tr></thead>
           <tbody>
-            <tr><td>LibriSpeech test-clean and test-other over core's <code>/v1/realtime</code></td><td class="num">5,559</td><td class="num">32</td><td>Every session ended <code>stop</code>. WER 3.57 % (test-clean) and 7.99 % (test-other).</td></tr>
-            <tr><td>LibriSpeech test-clean</td><td class="num">640</td><td class="num">64</td><td>Every session reached a final transcript. WER 2.89 %.</td></tr>
+            <tr><td>Every GPU suite plus four upstream batch-invariance cases, one A40, 2026-11-26</td><td class="mono">9503e3b878</td><td>896 cases; none failed and none skipped.</td></tr>
+            <tr><td>Plugin WER at 80, 160, 320, 560 and 1120 ms lookahead</td><td class="mono">cbf13fed4a</td><td>3.15, 2.63, 2.55, 2.70 and 2.44 %. At 320 ms it equals the state-pool baseline (2.55 %); served transcripts are equal across graph modes.</td></tr>
+            <tr><td>Stream-only server at <code>--max-model-len 144</code>, one A40, 2026-11-27</td><td>state-layer branch</td><td>Startup memory matched the 2048 baseline; all 200 test-clean requests over 32 sessions at 80, 320 and 1120 ms ended with a stop, none with a length cap; every transcript equals the baseline.</td></tr>
           </tbody>
         </table>
       </div>
       <div class="col stack">
-        <p>The server logged no preemption and no error. The plugin's
+        <p>The acceptance runs ACC-001 to ACC-004 have not run. The plugin's
           <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin#readme">README</a> lists each
-          result with its tier, build and plugin revision. Its
+          serving result with its tier, build and plugin revision, including the state-pool build's LibriSpeech runs. Its
           <a href="https://github.com/pdtgct/vllm-nemotron-asr-streaming-plugin/blob/main/docs/quickstart.md">quick start</a>
           reproduces both serving stages with one <code>vllm serve</code> command each. Stage 2 adds the
           <a href="https://github.com/pdtgct/vllm-riva-frontend">vllm-riva-frontend</a> endpoint plugin on a
           build that also carries #65546 and #67294.</p>
-        <p class="muted">Known limit: a whole-file request in flight slows concurrent streams on the same server.
-          On an earlier integration build, eight streams' p95 final latency rose from 0.55 s to 3.64 s with one
-          293 s file in flight.</p>
+        <p class="muted">Known limits. A server that takes whole files keeps the <code>max_model_len</code> its
+          longest file needs (77,000 for 600 s) and pays a raised token budget: on an A40 at 320 ms, state pages fell
+          from 6170 to 2742 eager and from 6441 to 2885 with CUDA graphs. The
+          <a href="landscape/#status">landscape</a> attributes that loss. On an earlier integration build, a
+          whole-file request in flight also slowed concurrent streams: eight streams' p95 final latency rose from
+          0.55 s to 3.64 s with one 293 s file in flight.</p>
       </div>
     </div>
   </div>
@@ -752,23 +665,29 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <table>
           <thead><tr><th>Pull request</th><th>State</th><th>Human review</th><th>Checks</th></tr></thead>
           <tbody>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>Drafts since 2026-11-21, for the state-layer plan; conflicting with <code>main</code></td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a>, <a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>Ready for review; conflicting with <code>main</code></td><td>None; bot review "Nothing blocking"</td><td><code>pre-run-check</code> waiting for a label</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67144">#67144</a>, <a href="https://github.com/vllm-project/vllm/pull/67151">#67151</a>, <a href="https://github.com/vllm-project/vllm/pull/67139">#67139</a></td><td>Ready for review</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Ready for review; mergeable</td><td>None</td><td>Not requested</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>Draft; conflicting with <code>main</code>; the hooks-only re-cut is not yet pushed</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td>State layer</td><td>Not opened</td><td>None</td><td>None</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a></td><td>Superseded drafts since 2026-11-21; they close when the state-layer pull request opens</td><td>None</td><td>Not for review</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a></td><td>Ready for review; conflicting with <code>main</code></td><td>Changes requested 2026-11-19; commits since</td><td><code>verified</code> label; <code>pre-run-check</code> passed</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>Ready for review; conflicting with <code>main</code></td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67144">#67144</a>, <a href="https://github.com/vllm-project/vllm/pull/67151">#67151</a></td><td>Ready for review; mergeable</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67139">#67139</a></td><td>Ready for review; mergeable</td><td>Changes requested 2026-11-17</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a></td><td>Ready for review; mergeable</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Ready for review; mergeable</td><td>None</td><td>vLLM-Omni checks pass</td></tr>
           </tbody>
         </table>
       </div>
       <div class="note col">
         <p><b>Why CI has not run.</b> <code>pre-run-check</code> requires a <code>ready</code>, <code>verified</code>
           or <code>ready-run-all-tests</code> label, or an author with at least four merged pull requests. The author
-          has none merged yet, so Buildkite has not run on any of these pull requests. The pull request bodies record
-          the CPU and A40 test runs done instead.</p>
+          has none merged yet. #65546 has the <code>verified</code> label and passed <code>pre-run-check</code>, but no
+          Buildkite run is reported on it or on any other pull request here. The pull request bodies record the CPU
+          and A40 test runs done instead.</p>
       </div>
       <div class="col stack">
         <h3>What we ask of maintainers</h3>
         <ol class="stack" style="gap:0.45rem;margin:0;padding-left:1.3rem">
-          <li>Add the <code>ready</code> label to the pull requests you are willing to test, starting with #67144, #67151 and #65546.</li>
+          <li>Add the <code>ready</code> label to the pull requests you are willing to test, starting with #67144 and #67151.</li>
           <li>Review in the <a href="#order">merge order</a> above, one RFC per reviewer if that fits your areas.</li>
           <li>Comment on <a href="https://github.com/vllm-project/vllm/issues/65543">RFC 1</a> if you know other work that should share this primitive.</li>
         </ol>
@@ -784,12 +703,17 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <h2>Future roadmap</h2>
     </div>
     <div class="stack-lg">
+      <div class="col stack">
+        <p>None of these items is scheduled. The core remedy and byte-sized budgeting are not decided.</p>
+      </div>
       <div class="table-box">
         <table>
           <thead><tr><th>Item</th><th>Trigger</th><th>Shape</th></tr></thead>
           <tbody>
-            <tr><td>State-layer pull request for RFC 1</td><td>not scheduled; the acceptance runs ACC-001 to ACC-004 have not run</td><td>one upstream pull request from <code>pstate-impl-20261122</code>; #67374 and #67375 close when it opens</td></tr>
-            <tr><td>Core remedy for the whole-file budget cost</td><td>a server that takes whole files must keep the default token budget</td><td>exempt a state model whose prompts cannot exceed one token from the <code>max_model_len</code> floor on the token budget (not decided)</td></tr>
+            <tr><td>Hooks-only re-cut on #67583</td><td>its GPU test round passes</td><td>force-push the re-cut so the pull request shows only the six hooks</td></tr>
+            <tr><td>State-layer pull request for RFC 1</td><td>the acceptance runs ACC-001 to ACC-004 pass</td><td>one upstream pull request from <code>pstate-impl-20261122</code>, stacked on #67583; the state-pool drafts close when it opens</td></tr>
+            <tr><td>Core remedy for the whole-file budget cost</td><td>a server that takes whole files must keep the default token budget</td><td>exempt a state model whose prompts cannot exceed one token from the <code>max_model_len</code> floor on the token budget</td></tr>
+            <tr><td>Byte-sized state budgeting</td><td>a decision on the open question in <a href="https://github.com/vllm-project/vllm/issues/55196">vllm#55196</a></td><td>size and admit state memory in bytes instead of in pages</td></tr>
             <tr><td>Tensor parallelism above 1</td><td>required, not yet scheduled</td><td>see the <a href="landscape/#roadmap">landscape</a></td></tr>
           </tbody>
         </table>
@@ -802,7 +726,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 
 <footer>
   <div class="wrap">
-    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Pull request facts read from GitHub on 2026-11-17, and the status table on 2026-11-27; line counts from the GitHub compare API.</p>
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Pull request facts and line counts read from the GitHub API on 2026-11-27, except where a date is given.</p>
     <p>RFCs: <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a> &middot; <a href="https://github.com/vllm-project/vllm/issues/65545">vllm#65545</a> &middot; <a href="https://github.com/vllm-project/vllm-omni/issues/9848">vllm-omni#9848</a>. <a href="../">All reviewer guides</a> &middot; source: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
   </div>
 </footer>
