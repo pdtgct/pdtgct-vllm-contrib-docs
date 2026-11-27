@@ -162,6 +162,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <a href="#coverage">Gap coverage and trade-offs</a>
       <a href="#tests">What the tests showed</a>
       <a href="#checks">Candidate checks</a>
+      <a href="#future-roadmap">Future roadmap</a>
     </nav>
     <p class="muted" style="font-size:0.9rem">Part of the <a href="../">persistent-state reviewer guide</a>. Gap IDs B1 to B7 and check IDs G1 to G7 are those of <a href="../state-pool-vs-state-layer/">State pool vs state layer</a>.</p>
   </div>
@@ -211,7 +212,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 <section id="production">
   <div class="wrap">
     <div class="head col">
-      <p class="eyebrow">2026-11-25 &middot; Production design</p>
+      <p class="eyebrow">2026-11-27 &middot; Production design</p>
       <h2>The production design keeps PR 6's state layer and closes each gap with a stated rule</h2>
     </div>
     <div class="col stack">
@@ -221,6 +222,9 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases,
         2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). The rest of
         this page records the 2026-11-20 analysis that led to this design.</p>
+      <div class="note">
+        <p><b>Status, 2026-11-27.</b> The branch head is <code>9503e3b878</code> (tag <code>pstate-impl-head</code>). From commit <code>cbf13fed4a</code> the detokenizer carries its state across turns (HIST-005, HIST-010), and from <code>9503e3b878</code> core applies chunked prefill to a state request only when its model declares it (DECL-016 to DECL-018). On an A40 on 2026-11-26 the head passed every suite plus four upstream batch-invariance cases: 896 cases, none failed and none skipped. Core meets PF-1 to PF-8 in code and tests. For PF-9, core has the layout accessor and capture over block 0 (PREP-009, PREP-010), and since 2026-11-27 the plugin captures over block 0. The acceptance runs ACC-001 to ACC-004 have not run. On the state layer at <code>cbf13fed4a</code> the plugin's WER is 3.15, 2.63, 2.55, 2.70 and 2.44 % at 80, 160, 320, 560 and 1120 ms, equal to the state-pool baseline at 320 ms (2.55 %), and served transcripts are equal across graph modes. Nothing is merged upstream. The <a href="../landscape/#status">landscape</a> gives the token-budget cost of a large <code>max_model_len</code> and the deployment rule for stream-only servers.</p>
+      </div>
     </div>
     <div class="table-box">
       <table>
@@ -264,8 +268,8 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         with an error on an input that carries no prompt tokens; an opening ADD that reuses a held request id ends the
         held stream with an error instead of merging into it; an explicit abort publishes a terminal output; and a
         stream is admitted with its opening ADD. The A40 round ran at <code>ddf6db2ab8</code>.</p>
-      <p>Both reviews passed the declared resumable <code>max_tokens</code> stop (TURN-012). Next: revise the rules for
-        these findings, add tests and code for the duplex rules, then run one A40 round.</p>
+      <p>Both reviews passed the declared resumable <code>max_tokens</code> stop (TURN-012). The rules carry to
+        <code>9503e3b878</code>, whose A40 round passed every suite on 2026-11-26.</p>
     </div>
   </div>
 </section>
@@ -609,6 +613,26 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       </table>
     </div>
     <p class="col" style="margin-top:1.3rem">The choice among the checks that are not started is open.</p>
+  </div>
+</section>
+
+<section id="future-roadmap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">Future roadmap</p>
+      <h2>Future roadmap</h2>
+    </div>
+    <p class="col">None of these items is decided or scheduled.</p>
+    <div class="table-box">
+      <table>
+        <thead><tr><th>Item</th><th>Trigger</th><th>Shape</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Core remedy for the whole-file budget cost</td><td>a server that takes whole files must keep the default token budget</td><td>exempt a state model whose prompts cannot exceed one token from the <code>max_model_len</code> floor on the token budget; expected to return the budget-sized buffers, peak and margin to baseline</td></tr>
+          <tr><td class="name">Byte-sized state budgeting</td><td>a decision on the open question in <a href="https://github.com/vllm-project/vllm/issues/55196">vllm#55196</a></td><td>size and admit state memory in bytes instead of in pages</td></tr>
+          <tr><td class="name">Tensor parallelism above 1</td><td>required, not yet scheduled</td><td>replicated state, with failure reports agreed across ranks (see the <a href="../landscape/#roadmap">landscape</a>)</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </section>
 

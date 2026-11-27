@@ -186,8 +186,9 @@ details.src pre { margin-top: 0.5rem; }
       <a href="#requirements">Requirements</a>
       <a href="#glossary">Glossary</a>
       <a href="#sources">Sources</a>
+      <a href="#future-roadmap">Future roadmap</a>
     </nav>
-    <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-25. Back to the <a href="../">persistent-state guide</a>.</p>
+    <p class="muted" style="font-size:0.9rem">Snapshot of a living document, 2026-11-27. Back to the <a href="../">persistent-state guide</a>.</p>
   </div>
 </header>
 
@@ -239,7 +240,7 @@ flowchart TD
     R --&gt; K["Kernels read KV and state through the block tables"]</code></pre></details>
       <div class="col stack">
         <ul class="plain">
-  <li><strong>Budget.</strong> Core gives the KV cache whatever memory remains after profiling and graph capture (<code>vllm/v1/worker/gpu_worker.py:828-832</code> at PR 6), so the cache is sized by leftover memory, not by a configured count. The extensible KV cache, completed in Q4 2026, reserves address space for every block and commits physical memory as needed, so block addresses never move (<code>vllm/v1/worker/extensible_kv_cache.py</code>).</li>
+  <li><strong>Budget.</strong> The extensible KV cache, completed in Q4 2026, reserves address space for every block and commits physical memory as needed, so block addresses never move. It sizes the cache after warmup from the free memory, less a margin of <code>max(1 GiB, 0.75 &times; transient peak)</code> and less the transient peak itself (<code>vllm/v1/worker/extensible_kv_cache.py:64-65</code> and <code>:599-625</code> at <code>9503e3b878</code>), so measured memory sizes the cache, not a configured count. Anything that raises the transient peak or the resident buffers therefore takes pages away; <a href="#status">Where the proposal stands</a> gives one case.</li>
   <li><strong>Groups and one page size.</strong> Layers with the same cache spec form a KV cache group, and each group has one manager (full attention, sliding window or Mamba). All groups draw pages from one block pool, so core makes their page sizes equal: an attention group raises its block size and a Mamba page is padded (<a href="https://github.com/vllm-project/vllm/blob/main/docs/design/hybrid_kv_cache_manager.md">hybrid KV cache manager design</a>). A model can declare its own grouping (<code>SupportsKVCacheGrouping</code>), and a platform can replace placement with a <code>KVCacheConfigBuilder</code>, an interface the code marks experimental (<code>vllm/v1/core/kv_cache_config_builder.py</code>).</li>
   <li><strong>Block tables and worker rows.</strong> Each request holds one block table per group, through which kernels read attention KV and read and write state pages. The model runner keeps <code>max_num_seqs</code> rows of per-request tables, and CUDA graphs capture these buffers' addresses, so the buffers must not move while a graph that uses them exists.</li>
   <li><strong>Prefix caching per group.</strong> A hybrid request's cache hit is the intersection of each group's hit, and the hybrid coordinator handles exactly two attention types, full attention plus one other. Mamba state is cached only at block boundaries, so a hit resumes at a boundary (<a href="https://github.com/vllm-project/vllm/blob/main/docs/features/automatic_prefix_caching.md">automatic prefix caching</a>).</li>
@@ -457,11 +458,11 @@ flowchart TD
   <div class="wrap">
     <div class="head col">
       <p class="eyebrow">6 &middot; Status</p>
-      <h2>Where the proposal stands (2026-11-25)</h2>
+      <h2>Where the proposal stands (2026-11-27)</h2>
     </div>
     <div class="stack-lg">
       <div class="col stack">
-        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>de0b0bccdb</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,729 / &minus;86 lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases, 2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). Core implements the state-group layout accessor and the block-0 capture rule; the plugin does not yet capture from them. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
+        <p>The proposal is written as EARS specs (prefix PSTATE) and implemented on pdtgct/vllm branch <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122">pstate-impl-20261122</a> at <code>de0b0bccdb</code>: upstream main <code>842f74fa8d</code> plus PR 6's net diff, the hooks-only re-cut of <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> and the <a href="https://github.com/vllm-project/vllm/issues/69139">#69139</a> fix, +1,729 / &minus;86 lines under <code>vllm/</code> in 34 files. Its GPU tests passed on an A40 at <code>ddf6db2ab8</code> (821 cases, 2026-11-24) and on an L40S at <code>de0b0bccdb</code> (the stub-model suite, 37 cases, 2026-11-25). Core implements the state-group layout accessor and the block-0 capture rule. <a href="../state-pool-vs-state-layer/">State pool vs state layer</a> maps each PoC gap to its rule.</p>
         <p>Rules settled on 2026-11-23:</p>
         <ul class="plain">
   <li><strong>No deadlines in the engine core.</strong> The caller owns a stream's lifetime. <code>AsyncLLM</code> aborts a stream whose input task or output generator ends without a close, and fails every open stream if the engine core dies.</li>
@@ -470,6 +471,15 @@ flowchart TD
   <li><strong>Recompute recovery is refused</strong> for state models; the per-request barrier always applies, and an opt-out for models that ignore stopped-row echoes is deferred.</li>
   <li><strong>Pending inputs are bounded by credits</strong> (<code>max_pending_stream_inputs</code>, default 8), not by errors.</li>
 </ul>
+        <div class="note col">
+          <p><b>Status, 2026-11-27.</b> The branch head is <code>9503e3b878</code> (tag <code>pstate-impl-head</code>). From commit <code>cbf13fed4a</code> the detokenizer carries its state across turns (PSTATE-HIST-005, HIST-010), and from <code>9503e3b878</code> core applies chunked prefill to a state request only when its model declares it (PSTATE-DECL-016 to DECL-018). On an A40 on 2026-11-26 the head passed every suite plus four upstream batch-invariance cases: 896 cases, none failed and none skipped.</p>
+          <p>Core meets PF-1 to PF-8 in code and tests. For PF-9, core has the layout accessor and capture over block 0 (PSTATE-PREP-009, PREP-010), and since 2026-11-27 the plugin captures over block 0. ACC-008 (a fixed page address) is met; the acceptance runs ACC-001 to ACC-004 have not run. Nothing is merged upstream.</p>
+          <p>On the state layer at <code>cbf13fed4a</code>, the Nemotron streaming-ASR plugin's WER is 3.15, 2.63, 2.55, 2.70 and 2.44 % at 80, 160, 320, 560 and 1120 ms. At 320 ms it equals the state-pool baseline (2.55 %), and served transcripts are equal across graph modes.</p>
+        </div>
+        <h3>Token budget and <code>max_model_len</code></h3>
+        <p>The plugin does not declare chunked prefill, because every input is one token. With chunked prefill off, upstream raises an unset <code>max_num_batched_tokens</code> to at least <code>max_model_len</code> (<code>vllm/engine/arg_utils.py:3221-3226</code> at <code>9503e3b878</code>). That token budget sizes the profile step, the encoder-cache reservation and the <code>inputs_embeds</code> buffer (<code>vllm/v1/worker/gpu/mm/encoder_runner.py:60-62</code>). On an A40 at 320 ms, <code>max_model_len</code> 77,000 (budget 77,000 against 2048) cut the state pages from 6170 to 2742 eager and from 6441 to 2885 with CUDA graphs, a page-memory loss of 20.16 and 20.91 GiB, with WER unchanged.</p>
+        <p>The loss follows the <a href="#memory">budget</a> rule. The transient peak rose from 1.64 to 10.3 GiB eager (1.12 to 10.3 with graphs), the margin from 1.23 to 7.73 GiB (1.0 to 7.73), and free memory after warmup fell by 5.0 GiB. The 5.0 GiB is consistent with the budget-sized <code>inputs_embeds</code> buffer; the encoder cache is cleared after profiling (<code>vllm/v1/worker/gpu/model_runner.py:1162-1165</code>). No allocation-level measurement confirms that split.</p>
+        <p>Deployment rule, decided 2026-11-26 and confirmed on an A40 on 2026-11-27: a stream-only server of the plugin runs a <code>--max-model-len</code> of at least 144 and no more than the default token budget (2048 for the API server on an A40), so the budget stays at its default. The floor is 2 plus <code>realtime_max_tokens</code> (142): compaction bounds a stream's position length to one turn (PSTATE-TURN-009, PSTATE-HIST-001), and <code>check_stop</code> ends a request when <code>num_tokens + position_offset &gt;= max_model_len</code> (<code>vllm/v1/core/sched/utils.py:105-118</code>). At 144, startup memory matched the 2048 baseline (6170 pages eager, 6441 with graphs); all 200 test-clean requests over 32 sessions at 80, 320 and 1120 ms ended with a stop, none with a length cap; and every transcript equals the baseline. A server that takes whole files keeps the <code>max_model_len</code> its longest file needs (77,000 for 600 s) and pays the raised budget.</p>
         <p>Under review: an engine-core contract that holds for every engine-core client, not only <code>AsyncLLM</code>, so that vLLM-Omni's stage clients get the same guarantees (see <a href="#duplex">vLLM-Omni full duplex</a> below). Two independent reviews asked for four core rules before tests: end a stream with an error on an empty continuation instead of failing an assert; refuse an opening request that reuses a held request id; publish a terminal output on an explicit abort; and admit a stream with its opening request, which checks and reserves capacity in one step. Both reviews passed the declared resumable <code>max_tokens</code> stop. Implemented at <code>de0b0bccdb</code> (<code>vllm/v1/engine/core.py:2145-2209</code>): all four rules, with an opener that reuses a held request id ending the held stream with an error.</p>
       </div>
     </div>
@@ -826,7 +836,7 @@ flowchart TB
 <tbody>
 <tr><td>State pool</td><td><a href="https://github.com/vllm-project/vllm/pull/67374">vllm#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a> stack, head <code>dc3d58ccc5</code></td></tr>
 <tr><td>State layer</td><td><a href="https://github.com/pdtgct/vllm/pull/6">pdtgct/vllm#6</a>, head <code>4582db799d</code></td></tr>
-<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>de0b0bccdb</code></td></tr>
+<tr><td>The proposal, implementation</td><td>pdtgct/vllm <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a>, head <code>de0b0bccdb</code>; status and budget citations at <code>9503e3b878</code> (2026-11-27)</td></tr>
 <tr><td>Bounded sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/53879">vllm#53879</a>, head <code>015eb5e212</code></td></tr>
 <tr><td>Resident sessions</td><td><a href="https://github.com/vllm-project/vllm/pull/68539">vllm#68539</a>, head <code>665cc58c15</code></td></tr>
 <tr><td>Upstream, design citations</td><td>vLLM main <code>07e4d6b957</code></td></tr>
@@ -842,7 +852,7 @@ flowchart TB
   <li>The sleep-and-wake case is verified link by link but was not run end to end.</li>
   <li>Bounded sessions refuse PP and DP above 1; "TP only" rests on there being no TP check.</li>
   <li>Voxtral's turns ending on a length stop is inferred from <code>realtime_max_tokens = 1</code>, not observed.</li>
-  <li>The proposal's column describes the design. Its GPU tests pass (an A40 at <code>ddf6db2ab8</code>, an L40S at <code>de0b0bccdb</code>), but no acceptance run (PSTATE-ACC-001 to ACC-004) has happened, so its other green cells are targets, not results. The plugin arms wait for the plugin to capture from the state-group layout and to accept core's graph capture. Runner graphs with <code>torch.compile</code> on, a guaranteed fold in a GPU stream, batch invariance and chunked prefill of a state request are untested.</li>
+  <li>The proposal's column describes the design. Its GPU tests pass (an A40 at <code>9503e3b878</code>, 896 cases, 2026-11-26), but no acceptance run (PSTATE-ACC-001 to ACC-004) has happened, so its other green cells are targets, not results. Since 2026-11-27 the plugin captures over block 0. Runner graphs with <code>torch.compile</code> on and a guaranteed fold in a GPU stream are untested; four upstream batch-invariance cases pass, and a state request takes chunked prefill only when its model declares it.</li>
   <li>TensorRT-LLM rests on its published documentation, not on code read for this guide.</li>
   <li>The full-duplex PF-4 overlap cost and the preemption hazard for Omni sessions are inferences; nothing was run.</li>
   <li>PR 6 line numbers were not re-checked against main; where main has moved, a rebase will shift them.</li>
@@ -939,6 +949,29 @@ flowchart TB
   </div>
 </section>
 
+<section id="future-roadmap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">16 &middot; Future roadmap</p>
+      <h2>Future roadmap</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="col stack">
+        <p>None of these items is decided or scheduled.</p>
+      </div>
+      <div class="table-box">
+<table>
+<thead><tr><th>Item</th><th>Trigger</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td>Core remedy for the whole-file budget cost</td><td>a server that takes whole files must keep the default token budget</td><td>exempt a state model whose prompts cannot exceed one token from the <code>max_model_len</code> floor on the token budget; expected to return the budget-sized buffers, peak and margin to baseline</td></tr>
+<tr><td>Byte-sized state budgeting</td><td>a decision on the open question in <a href="https://github.com/vllm-project/vllm/issues/55196">vllm#55196</a></td><td>size and admit state memory in bytes instead of in pages</td></tr>
+<tr><td>Tensor parallelism above 1</td><td>required, not yet scheduled</td><td>see <a href="#roadmap">Roadmap alignment</a></td></tr>
+</tbody>
+</table>
+      </div>
+    </div>
+  </div>
+</section>
 
 </main>
 

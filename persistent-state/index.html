@@ -173,7 +173,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 
 <header class="top">
   <div class="wrap">
-    <p class="eyebrow">vLLM review guide &middot; state read 2026-11-17</p>
+    <p class="eyebrow">vLLM review guide &middot; state read 2026-11-17; status 2026-11-27</p>
     <h1>Engine-managed persistent state for streaming models</h1>
     <p class="lede">vLLM keeps state that it can rebuild from tokens. A growing set of streaming audio,
       speech and video models carry state that comes from their input and cannot be rebuilt. Three RFCs
@@ -197,6 +197,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <a href="#rfc3">RFC 3</a>
       <a href="#evidence">Evidence</a>
       <a href="#status">Status</a>
+      <a href="#future-roadmap">Future roadmap</a>
     </nav>
   </div>
 </header>
@@ -532,6 +533,16 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           lifetime, and shows how the proposal meets vLLM-Omni full duplex through an engine-core contract.
           The production implementation builds on the state layer; its rule for each gap is under
           <a href="state-pool-vs-state-layer/#production">Production design</a>.</p>
+        <div class="note ok">
+          <p><b>Status, 2026-11-27.</b> RFC 1 now builds on PR 6's state layer; #67374, #67375 and #67583 are drafts,
+            and #67374 and #67375 close when the state-layer pull request opens. The implementation is pdtgct/vllm branch
+            <a href="https://github.com/pdtgct/vllm/tree/pstate-impl-20261122"><code>pstate-impl-20261122</code></a> at
+            <code>9503e3b878</code>, which passed every suite plus four upstream batch-invariance cases on an A40 on
+            2026-11-26 (896 cases, none failed and none skipped). On the state layer the plugin's WER at 320 ms equals
+            the state-pool baseline (2.55 %). The <a href="landscape/#status">landscape</a> gives the full status, the
+            token-budget cost of a large <code>max_model_len</code> and the deployment rule for stream-only servers. The
+            pull request descriptions below record the state-pool design as opened.</p>
+        </div>
       </div>
       <div class="prs">
         <article class="pr">
@@ -741,10 +752,10 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
         <table>
           <thead><tr><th>Pull request</th><th>State</th><th>Human review</th><th>Checks</th></tr></thead>
           <tbody>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>Ready for review; rebased onto <code>main</code> 2026-11-20, mergeable</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a>, <a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>Ready for review; mergeable</td><td>None; bot review "Nothing blocking"</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a>, <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, <a href="https://github.com/vllm-project/vllm/pull/67583">#67583</a></td><td>Drafts since 2026-11-21, for the state-layer plan; conflicting with <code>main</code></td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65546">#65546</a>, <a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>Ready for review; conflicting with <code>main</code></td><td>None; bot review "Nothing blocking"</td><td><code>pre-run-check</code> waiting for a label</td></tr>
             <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67144">#67144</a>, <a href="https://github.com/vllm-project/vllm/pull/67151">#67151</a>, <a href="https://github.com/vllm-project/vllm/pull/67139">#67139</a></td><td>Ready for review</td><td>None</td><td><code>pre-run-check</code> waiting for a label</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Drafts; <code>main</code> merged in 2026-11-17, mergeable</td><td>None</td><td>Not requested</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a>, <a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Ready for review; mergeable</td><td>None</td><td>Not requested</td></tr>
           </tbody>
         </table>
       </div>
@@ -757,10 +768,31 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
       <div class="col stack">
         <h3>What we ask of maintainers</h3>
         <ol class="stack" style="gap:0.45rem;margin:0;padding-left:1.3rem">
-          <li>Add the <code>ready</code> label to the pull requests you are willing to test, starting with #67144, #67151, #67374 and #65546.</li>
+          <li>Add the <code>ready</code> label to the pull requests you are willing to test, starting with #67144, #67151 and #65546.</li>
           <li>Review in the <a href="#order">merge order</a> above, one RFC per reviewer if that fits your areas.</li>
           <li>Comment on <a href="https://github.com/vllm-project/vllm/issues/65543">RFC 1</a> if you know other work that should share this primitive.</li>
         </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="future-roadmap">
+  <div class="wrap">
+    <div class="head col">
+      <p class="eyebrow">Future roadmap</p>
+      <h2>Future roadmap</h2>
+    </div>
+    <div class="stack-lg">
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Item</th><th>Trigger</th><th>Shape</th></tr></thead>
+          <tbody>
+            <tr><td>State-layer pull request for RFC 1</td><td>not scheduled; the acceptance runs ACC-001 to ACC-004 have not run</td><td>one upstream pull request from <code>pstate-impl-20261122</code>; #67374 and #67375 close when it opens</td></tr>
+            <tr><td>Core remedy for the whole-file budget cost</td><td>a server that takes whole files must keep the default token budget</td><td>exempt a state model whose prompts cannot exceed one token from the <code>max_model_len</code> floor on the token budget (not decided)</td></tr>
+            <tr><td>Tensor parallelism above 1</td><td>required, not yet scheduled</td><td>see the <a href="landscape/#roadmap">landscape</a></td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -770,7 +802,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
 
 <footer>
   <div class="wrap">
-    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Pull request facts read from GitHub on 2026-11-17; line counts from the GitHub compare API.</p>
+    <p>Prepared by Pete Tanski (<a href="https://github.com/pdtgct">@pdtgct</a>). Pull request facts read from GitHub on 2026-11-17, and the status table on 2026-11-27; line counts from the GitHub compare API.</p>
     <p>RFCs: <a href="https://github.com/vllm-project/vllm/issues/65543">vllm#65543</a> &middot; <a href="https://github.com/vllm-project/vllm/issues/65545">vllm#65545</a> &middot; <a href="https://github.com/vllm-project/vllm-omni/issues/9848">vllm-omni#9848</a>. <a href="../">All reviewer guides</a> &middot; source: <a href="https://github.com/pdtgct/pdtgct-vllm-contrib-docs">pdtgct/pdtgct-vllm-contrib-docs</a>.</p>
   </div>
 </footer>
