@@ -378,13 +378,13 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/67294">#67294</a></td><td>readiness and draining</td><td>#65546</td><td class="num">256</td><td class="num">757</td><td class="num">43</td></tr>
             <tr class="group"><td colspan="6">RFC 3 &middot; vLLM-Omni on Model Runner V2</td></tr>
             <tr><td class="mono"><a href="https://github.com/vllm-project/vllm/pull/65549">vllm#65549</a></td><td>runner method</td><td>main</td><td class="num">11</td><td class="num">0</td><td class="num">0</td></tr>
-            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Omni runner override</td><td>vllm#65549</td><td class="num">51</td><td class="num">88</td><td class="num">0</td></tr>
+            <tr><td class="mono"><a href="https://github.com/vllm-project/vllm-omni/pull/9849">omni#9849</a></td><td>Omni runner override</td><td>vllm#65549</td><td class="num">54</td><td class="num">93</td><td class="num">0</td></tr>
           </tbody>
         </table>
       </div>
       <p class="col muted" style="font-size:0.88rem">Added lines in each pull request's own commits. "Source" counts
         lines outside <code>tests/</code> and <code>docs/</code>. Counted from the GitHub API on 2026-11-27, except
-        #67151 and omni#9849 (2026-11-17). #67583's row counts the hooks-only re-cut on pdtgct/vllm branch
+        #67151 (2026-11-17). #67583's row counts the hooks-only re-cut on pdtgct/vllm branch
         <a href="https://github.com/pdtgct/vllm/tree/recut-67583-hooks-20261124"><code>recut-67583-hooks-20261124</code></a>
         (<code>81b7f7c8c8</code>); the pull request itself still shows its earlier stacked form.</p>
     </div>
@@ -446,7 +446,7 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
             <tr><td>PF-5 Turn boundary</td><td>A request parks only at a stop the model declares resumable; any other end finishes it.</td></tr>
             <tr><td>PF-6 Length independence</td><td>Per-turn work and retained host memory in every engine layer are O(new input).</td></tr>
             <tr><td>PF-7 Account and reclaim</td><td>Admission counts every held resource and refuses at open; the caller owns the stream's lifetime, and the engine core sets no deadline.</td></tr>
-            <tr><td>PF-8 Fail one request</td><td>A failure attributable to one request finishes that request with an error; the others continue.</td></tr>
+            <tr><td>PF-8 Fail one request</td><td>A failure the model reports for one request, or a PF-2 violation, finishes that request with an error; the others continue. Other Python or CUDA exceptions still stop the engine.</td></tr>
             <tr><td>PF-9 Start and resume safely</td><td>Core honors the declared profiling, warmup and capture prerequisites before final page sizing and before serving.</td></tr>
           </tbody>
         </table>
@@ -467,8 +467,8 @@ footer .wrap { padding-block: 1.6rem 2.4rem; font-size: 0.85rem; color: var(--mu
           transcription for the same checkpoint; the plugin adds streaming sessions, and serves complete files on
           the same server.</p>
         <p class="muted">History. RFC 1 first proposed a separate state pool with its own scheduler, in
-          <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> (1,531 source lines) and
-          <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a> (1,527), with the model hooks
+          <a href="https://github.com/vllm-project/vllm/pull/67374">#67374</a> and
+          <a href="https://github.com/vllm-project/vllm/pull/67375">#67375</a>, about 1,500 source lines each, with the model hooks
           stacked on them in #67583. The state layer replaced it on 2026-11-21.
           <a href="state-pool-vs-state-layer/">State pool vs state layer</a> explains why, and
           <a href="streaming-session-designs/">Streaming-session designs</a> compares both with resident sessions in
