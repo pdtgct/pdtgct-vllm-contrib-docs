@@ -6,7 +6,7 @@ Live status, with views by RFC, is in the GitHub Project [vLLM contributions](ht
 
 Last updated 2026-11-27. Status and head commits come from GitHub on that date; the lists come from `gh search` by author, which can miss items.
 
-`vllm-project/vllm` limits contributors without write access to 6 open pull requests ([contributing guide, "Pull Request Limits and Escalation"](https://github.com/vllm-project/vllm/blob/main/docs/contributing/README.md#pull-request-limits-and-escalation)). Pete has 10 open there, 4 of them drafts and 6 ready for review, so a draft can be marked ready only after another ready pull request closes or returns to draft, and new pull requests wait on fork branches. GitHub allowed undrafting at 5 non-draft pull requests and refused it at 8, which fits a limit of 6 on non-draft pull requests.
+`vllm-project/vllm` limits contributors without write access to 6 open pull requests ([contributing guide, "Pull Request Limits and Escalation"](https://github.com/vllm-project/vllm/blob/main/docs/contributing/README.md#pull-request-limits-and-escalation)). Pete has 10 open there, 4 of them drafts and 6 ready for review, so without bypass-list access a draft can be marked ready only after another ready pull request closes or returns to draft, and new pull requests wait on fork branches. GitHub allowed undrafting at 5 non-draft pull requests and refused it at 8, which fits a limit of 6 on non-draft pull requests.
 
 ## Plan (2026-11-27)
 
@@ -31,9 +31,9 @@ Last updated 2026-11-27. Status and head commits come from GitHub on that date; 
 | [vllm#67374](https://github.com/vllm-project/vllm/pull/67374) | [Core] Persistent state: state pool, scheduling and release fence | RFC 1 | `2041ef2db3` | draft, conflicting | Close when the state-layer PR opens ([plan](https://github.com/vllm-project/vllm/issues/65543#issuecomment-7069320948)) |
 | [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `baacf2fb3c` | draft, conflicting | Close when the state-layer PR opens; admission to be rewritten for the KV cache manager. The three bot findings on #67583, all in this PR's code, are fixed |
 | [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | draft, conflicting | Replace the head with the hooks-only re-cut `81b7f7c8c8` once its A40 round passes, then update the title and body |
-| [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `94da6c7187` | ready, conflicting; changes requested 2026-11-19 | Answer the requested changes and resolve the conflict |
+| [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `94da6c7187` | ready, conflicting; a review requested changes on 2026-11-19 | Answer the requested changes and resolve the conflict |
 | [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `08a8b53f18` | ready, conflicting | Review (stacked on #65546) |
-| [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `b7ec4c2660` | ready, mergeable; changes requested 2026-11-17 | Answer the requested changes |
+| [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `b7ec4c2660` | ready, mergeable, review required; a review requested changes on 2026-11-17 | Answer the requested changes |
 | [vllm#67144](https://github.com/vllm-project/vllm/pull/67144) | [Bugfix][Frontend] Fail speech-to-text requests that finish with error or abort | none | `3e4ab32f04` | ready, mergeable, review required | Review |
 | [vllm#67151](https://github.com/vllm-project/vllm/pull/67151) | [Frontend] Pass use_beam_search and max_completion_tokens to speech-to-text models | none | `dbae7c72cf` | ready, mergeable, review required | Review |
 | [vllm#65549](https://github.com/vllm-project/vllm/pull/65549) | [Core][MRv2] Build ModelState through an overridable runner method | RFC 3 | `63fbc1cde2` | ready, mergeable, review required | Review; no RFC 1 dependency |
@@ -46,7 +46,7 @@ Each branch is on [pdtgct/vllm](https://github.com/pdtgct/vllm) and waits for th
 
 | Branch | Tip | Change | Tracks |
 | --- | --- | --- | --- |
-| [`fix/streaming-resumed-session-worker-slot`](https://github.com/pdtgct/vllm/tree/fix/streaming-resumed-session-worker-slot) | `0a09c28165` | [Bugfix][Core] Count resumed streaming sessions against `max_num_seqs` | Fixes [vllm#69139](https://github.com/vllm-project/vllm/issues/69139) |
+| [`fix/streaming-resumed-session-worker-slot`](https://github.com/pdtgct/vllm/tree/fix/streaming-resumed-session-worker-slot) | `0a09c28165` | [Bugfix][Core] Count resumed streaming sessions against `max_num_seqs` | Fixes [vllm#69139](https://github.com/vllm-project/vllm/issues/69139); held, not to be opened while [vllm#69316](https://github.com/vllm-project/vllm/pull/69316) is open |
 | [`serve-http-repeated-signal-exit`](https://github.com/pdtgct/vllm/tree/serve-http-repeated-signal-exit) | `5815d88a6c` | [Frontend] Exit the API server on a repeated signal after engine shutdown | RFC 2 |
 | [`endpoint-plugin-authenticated-prefixes`](https://github.com/pdtgct/vllm/tree/endpoint-plugin-authenticated-prefixes) | `f57d81500f` | [Frontend] Let endpoint plugins require the API key for their routes | RFC 2 |
 | [`endpoint-plugin-drain-abandonment`](https://github.com/pdtgct/vllm/tree/endpoint-plugin-drain-abandonment) | `a7af02f9e0` | Drain abandonment, with `--endpoint-plugin-drain-timeout` | RFC 2, after #67294 |
@@ -93,4 +93,4 @@ Add a new issue or pull request to the Project, and set its Effort, RFC, Next ac
 | Item | Trigger | Shape |
 | --- | --- | --- |
 | State-layer pull request for RFC 1 | not scheduled; the acceptance runs have not run | one upstream pull request from `pstate-impl-20261122`; #67374 and #67375 close when it opens |
-| New fork branches open as pull requests | the open pull request count falls below the limit | move each row of "Pull requests to be opened" to "Open pull requests" |
+| New fork branches open as pull requests | the open pull request count falls below the limit | move each row of "Pull requests to be opened" to "Open pull requests", except `fix/streaming-resumed-session-worker-slot` while vllm#69316 is open |
