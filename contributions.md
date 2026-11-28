@@ -14,6 +14,12 @@ Last updated 2026-11-28. Status and head commits come from GitHub on that date; 
 - #67583, the model hooks, is re-cut as a hooks-only change on `main` (approved 2026-11-21), so it no longer depends on #67374 or #67375. The re-cut is on [`recut-67583-hooks-20261124`](https://github.com/pdtgct/vllm/tree/recut-67583-hooks-20261124) at `81b7f7c8c8`, rebased on `main` on 2026-11-24, and replaces the PR's head after its GPU tests pass.
 - RFC 3: move forward. vllm-omni#9849 needs only vllm#65549, and neither depends on RFC 1. If the state layer replaces the state pool, RFC 3's section 1 and its migration step 5 need rewording.
 
+## Open questions
+
+| Question | Asked | Affects | Current state |
+| --- | --- | --- | --- |
+| Should `/health_generate` ([vllm#60505](https://github.com/vllm-project/vllm/pull/60505)) return 503 while the server drains, as `/ready` does? The options are: both readiness routes return 503 when shutdown starts; `/health_generate` stays an engine check and the docs name `/ready` for draining; or one readiness route, `/ready`, runs the generation probe on request. | [vllm#68784](https://github.com/vllm-project/vllm/issues/68784#issuecomment-7242070569), 2026-11-28 | #67294 | #67294 implements the first option (503 with reason `draining`, since `c54fcaa4bc`). Upstream `main` returns 200 from `/health_generate` during #67294's plugin drain phase and 503 (`probe_failed`) only once engine shutdown begins. No maintainer answer yet |
+
 ## RFCs
 
 | RFC | Title | Opened | Status | Pull requests |
@@ -32,7 +38,7 @@ Last updated 2026-11-28. Status and head commits come from GitHub on that date; 
 | [vllm#67375](https://github.com/vllm-project/vllm/pull/67375) | [Core] Persistent state: stream admission and admitted streams in AsyncLLM | RFC 1 | `baacf2fb3c` | draft, conflicting | Close when the state-layer PR opens; admission to be rewritten for the KV cache manager. The three bot findings on #67583, all in this PR's code, are fixed |
 | [vllm#67583](https://github.com/vllm-project/vllm/pull/67583) | [Core] Persistent state: model hooks for CUDA graph capture, warmup, shutdown and memory contributors | RFC 1 | `dc3d58ccc5` | draft, conflicting | Replace the head with the hooks-only re-cut `81b7f7c8c8` once its A40 round passes, then update the title and body |
 | [vllm#65546](https://github.com/vllm-project/vllm/pull/65546) | [Frontend] Add endpoint plugin startup and cleanup hooks | RFC 2 | `2ea9ce0f44` | ready, mergeable; a review requested changes on 2026-11-19, and the replies were posted on 2026-11-21 | Re-review. On 2026-11-28 a docstring fix made the Read the Docs build pass its strict griffe check |
-| [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `91e20b45a6` | ready, mergeable | Review (stacked on #65546). `main`'s new `/health_generate` now also returns 503 (reason `draining`) while the server drains; whether it should is an open question for maintainers. Includes #65546's docstring fix (2026-11-28) |
+| [vllm#67294](https://github.com/vllm-project/vllm/pull/67294) | [Frontend] Add endpoint plugin readiness and coordinated draining | RFC 2 | `91e20b45a6` | ready, mergeable | Review (stacked on #65546). `main`'s new `/health_generate` now also returns 503 (reason `draining`) while the server drains; whether it should is [an open question](#open-questions). Includes #65546's docstring fix (2026-11-28) |
 | [vllm#67139](https://github.com/vllm-project/vllm/pull/67139) | [Bugfix][Frontend] Refuse new /v1/realtime sessions during shutdown. | RFC 2 | `7e1ae67ec4` | ready, mergeable, review required; changes requested on 2026-11-17 were addressed and answered on 2026-11-28 | Re-review. The flag is now `app.state.draining`, shared with #67294 |
 | [vllm#67144](https://github.com/vllm-project/vllm/pull/67144) | [Bugfix][Frontend] Fail speech-to-text requests that finish with error or abort | none | `1e5ccd4b0e` | ready, mergeable, review required | Review. Merged with `main` at `162277e73f` on 2026-11-28; `pre-run-check` needs a `verified` or `ready` label from a maintainer |
 | [vllm#67151](https://github.com/vllm-project/vllm/pull/67151) | [Frontend] Pass use_beam_search and max_completion_tokens to speech-to-text models | none | `67a76f87b5` | ready, mergeable, review required | Review (contains #67144's commits). Merged with `main` at `162277e73f` on 2026-11-28; `pre-run-check` needs a `verified` or `ready` label from a maintainer |
@@ -70,6 +76,7 @@ Each branch is on [pdtgct/vllm](https://github.com/pdtgct/vllm) and waits for th
 | Item | Author | Pete's part |
 | --- | --- | --- |
 | [pdtgct/vllm#6](https://github.com/pdtgct/vllm/pull/6), [WIP][Core] Persistent state as a standard state layer | [@LucasWilkinson](https://github.com/LucasWilkinson) | Ported the streaming ASR plugin onto it and [reported the result](https://github.com/pdtgct/vllm/pull/6#issuecomment-7039667149) |
+| [vllm#68784](https://github.com/vllm-project/vllm/issues/68784), [Tracking] Rust frontend as default | [@njhill](https://github.com/njhill) | [Asked](https://github.com/vllm-project/vllm/issues/68784#issuecomment-7242070569) whether `/health_generate` should return 503 while the server drains; see [Open questions](#open-questions) |
 
 ## Projects
 
